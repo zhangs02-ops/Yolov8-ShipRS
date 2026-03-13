@@ -16,8 +16,10 @@ __all__ = (
     "Conv",
     "Conv2",
     "ConvTranspose",
+    "CoordAttention",
     "DWConv",
     "DWConvTranspose2d",
+    "ECA",
     "Focus",
     "GhostConv",
     "Index",
@@ -611,6 +613,135 @@ class CBAM(nn.Module):
             (torch.Tensor): Attended output tensor.
         """
         return self.spatial_attention(self.channel_attention(x))
+
+
+class ECA(nn.Module):
+    """ECA注意力模块（Efficient Channel Attention）。
+
+    通过自适应1D卷积核实现轻量级通道注意力，几乎零参数开销，非常适合小模型。
+    核心思想：用1D卷积代替全连接层进行跨通道交互，卷积核大小由通道数自动计算，
+    避免了SE模块中降维带来的信息损失。
+
+    参考文献: ECA-Net: Efficient Channel Attention for Deep CNNs (CVPR 2020)
+
+    Attributes:
+        pool (nn.AdaptiveAvgPool2d): 全局平均池化，将空间维度压缩为1x1。
+        conv (nn.Conv1d): 自适应1D卷积，核大小由通道数自动计算。
+        act (nn.Sigmoid): Sigmoid激活函数，生成0~1之间的通道注意力权重。
+    """
+
+    def __init__(self, c1, gamma=2, b=1):
+        """初始化ECA模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            gamma (int): 自适应核大小计算参数，控制核大小与通道数的映射关系。
+            b (int): 自适应核大小计算参数，偏置项。
+        """
+        super().__init__()
+        # 自适应计算1D卷积核大小: k = |log2(C)/gamma + b/gamma|，取最近奇数
+        # 例如: C=64 -> k=3, C=256 -> k=5, C=1024 -> k=5
+        # 通道数越多，卷积核越大，跨通道交互范围越广
+        kernel_size = int(abs(math.log2(c1) / gamma + b / gamma))
+        kernel_size = kernel_size if kernel_size % 2 else kernel_size + 1  # 确保为奇数
+
+        self.pool = nn.AdaptiveAvgPool2d(1)  # 全局平均池化: (B,C,H,W) -> (B,C,1,1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+        self.act = nn.Sigmoid()
+
+    def forward(self, x):
+        """前向传播: 全局池化 -> 1D卷积跨通道交互 -> Sigmoid生成权重 -> 通道加权。
+
+        Args:
+            x (torch.Tensor): 输入特征图，形状为 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 通道注意力加权后的特征图，形状不变 (B, C, H, W)。
+        """
+        y = self.pool(x)                          # (B, C, 1, 1) 全局平均池化获取通道描述符
+        y = y.squeeze(-1).transpose(-1, -2)        # (B, 1, C) 调整维度以适配1D卷积
+        y = self.conv(y)                           # (B, 1, C) 1D卷积实现相邻通道间的信息交互
+        y = y.transpose(-1, -2).unsqueeze(-1)      # (B, C, 1, 1) 恢复维度
+        return x * self.act(y)                     # 逐通道加权: 每个通道乘以对应的注意力权重
+
+
+class CoordAttention(nn.Module):
+    """坐标注意力模块（Coordinate Attention）。
+
+    将传统通道注意力分解为水平方向（H）和垂直方向（W）两个1D注意力，
+    能够同时编码通道关系和精确的空间位置信息。相比CBAM等空间注意力方法，
+    坐标注意力能捕获长程依赖且计算开销很小，特别适用于小目标检测任务。
+
+    工作流程:
+        1. 分别沿H方向和W方向进行自适应平均池化，保留位置信息
+        2. 拼接两个方向的特征，通过共享1x1卷积进行通道降维和特征变换
+        3. 拆分回H和W两个分支，各自通过独立1x1卷积生成注意力权重
+        4. 用H注意力和W注意力的乘积对原始特征进行加权
+
+    参考文献: Coordinate Attention for Efficient Mobile Network Design (CVPR 2021)
+
+    Attributes:
+        pool_h (nn.AdaptiveAvgPool2d): 水平方向池化，输出 (H, 1)。
+        pool_w (nn.AdaptiveAvgPool2d): 垂直方向池化，输出 (1, W)。
+        conv1 (nn.Conv2d): 共享的1x1降维卷积，减少计算量。
+        bn1 (nn.BatchNorm2d): 批归一化层，稳定训练。
+        act (nn.SiLU): 激活函数（与YOLOv8保持一致使用SiLU）。
+        conv_h (nn.Conv2d): H方向注意力生成的1x1卷积。
+        conv_w (nn.Conv2d): W方向注意力生成的1x1卷积。
+    """
+
+    def __init__(self, c1, reduction=32):
+        """初始化坐标注意力模块。
+
+        Args:
+            c1 (int): 输入/输出通道数。
+            reduction (int): 中间层通道缩减比例，用于降低计算量。
+        """
+        super().__init__()
+        # 中间通道数，最小为8防止信息瓶颈
+        mid_c = max(8, c1 // reduction)
+
+        # 方向池化: 分别在H和W方向压缩空间维度，保留另一个方向的位置信息
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))  # (B,C,H,W) -> (B,C,H,1)
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))  # (B,C,H,W) -> (B,C,1,W)
+
+        # 共享变换: 1x1卷积降维 + BN + 激活
+        self.conv1 = nn.Conv2d(c1, mid_c, 1, 1, 0, bias=False)
+        self.bn1 = nn.BatchNorm2d(mid_c)
+        self.act = nn.SiLU()
+
+        # 独立分支: 分别生成H方向和W方向的注意力权重
+        self.conv_h = nn.Conv2d(mid_c, c1, 1, 1, 0, bias=False)
+        self.conv_w = nn.Conv2d(mid_c, c1, 1, 1, 0, bias=False)
+
+    def forward(self, x):
+        """前向传播: H池化+W池化 -> 拼接+共享变换 -> 拆分+独立映射 -> 双方向注意力加权。
+
+        Args:
+            x (torch.Tensor): 输入特征图，形状为 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 坐标注意力加权后的特征图，形状不变 (B, C, H, W)。
+        """
+        B, C, H, W = x.shape
+
+        # Step 1: 方向池化，分别沿H和W方向获取位置编码
+        x_h = self.pool_h(x)                         # (B, C, H, 1) 保留垂直位置信息
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)     # (B, C, W, 1) 保留水平位置信息，转置以便拼接
+
+        # Step 2: 拼接两个方向的特征，共享1x1卷积进行降维和特征变换
+        y = torch.cat([x_h, x_w], dim=2)              # (B, C, H+W, 1)
+        y = self.act(self.bn1(self.conv1(y)))          # (B, mid_c, H+W, 1) 降维+激活
+
+        # Step 3: 拆分回H和W两个分支
+        x_h, x_w = y.split([H, W], dim=2)             # (B, mid_c, H, 1) 和 (B, mid_c, W, 1)
+
+        # Step 4: 各自通过独立1x1卷积生成注意力权重
+        x_h = self.conv_h(x_h).sigmoid()               # (B, C, H, 1) H方向注意力
+        x_w = self.conv_w(x_w.permute(0, 1, 3, 2)).sigmoid()  # (B, C, 1, W) W方向注意力
+
+        # Step 5: 双方向注意力加权 — 同时编码"在哪里"和"关注什么通道"
+        return x * x_h * x_w
 
 
 class Concat(nn.Module):

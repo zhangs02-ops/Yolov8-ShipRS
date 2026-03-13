@@ -9,13 +9,14 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .conv import Conv, CoordAttention, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
     "C1",
     "C2",
     "C2PSA",
+    "C2f_CA",
     "C3",
     "C3TR",
     "CIB",
@@ -30,6 +31,7 @@ __all__ = (
     "Attention",
     "BNContrastiveHead",
     "Bottleneck",
+    "BottleneckCA",
     "BottleneckCSP",
     "C2f",
     "C2fAttn",
@@ -2065,3 +2067,104 @@ class RealNVP(nn.Module):
             self.float()
         z, log_det = self.backward_p(x)
         return self.prior.log_prob(z) + log_det
+
+
+class BottleneckCA(nn.Module):
+    """带坐标注意力的瓶颈模块（Bottleneck with Coordinate Attention）。
+
+    在标准Bottleneck的输出上添加CoordAttention坐标注意力机制，
+    使每个瓶颈层的输出都经过精确的空间位置编码增强。
+    坐标注意力能够同时捕获通道间关系和空间位置信息，
+    对小目标（如遥感船舶）的定位精度有显著提升。
+
+    网络结构:
+        输入 -> Conv(降维) -> Conv(升维) -> CoordAttention(位置编码) -> [+ 残差] -> 输出
+
+    Attributes:
+        cv1 (Conv): 第一个卷积层，3x3卷积进行通道降维。
+        cv2 (Conv): 第二个卷积层，3x3卷积恢复通道数。
+        ca (CoordAttention): 坐标注意力模块，编码H/W方向的位置信息。
+        add (bool): 是否使用残差连接（要求输入输出通道数相同）。
+    """
+
+    def __init__(
+        self, c1: int, c2: int, shortcut: bool = True, g: int = 1, k: tuple[int, int] = (3, 3), e: float = 0.5
+    ):
+        """初始化带坐标注意力的瓶颈模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            shortcut (bool): 是否使用残差连接。
+            g (int): 分组卷积的组数。
+            k (tuple): 两个卷积层的卷积核大小。
+            e (float): 通道扩展比例，控制中间隐藏层的通道数。
+        """
+        super().__init__()
+        c_ = int(c2 * e)  # 中间隐藏通道数
+        self.cv1 = Conv(c1, c_, k[0], 1)               # 第一个卷积: 降维
+        self.cv2 = Conv(c_, c2, k[1], 1, g=g)           # 第二个卷积: 升维
+        self.ca = CoordAttention(c2)                     # 坐标注意力: 编码空间位置
+        self.add = shortcut and c1 == c2                 # 残差连接条件
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """前向传播: 卷积 -> 坐标注意力增强 -> 可选残差连接。
+
+        Args:
+            x (torch.Tensor): 输入特征图 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 注意力增强后的特征图 (B, C, H, W)。
+        """
+        # 标准卷积路径 + 坐标注意力增强
+        out = self.ca(self.cv2(self.cv1(x)))
+        # 残差连接: 梯度直通，加速收敛，防止退化
+        return x + out if self.add else out
+
+
+class C2f_CA(C2f):
+    """带坐标注意力增强的C2f模块（C2f with Coordinate Attention）。
+
+    将C2f中的标准Bottleneck替换为BottleneckCA，使每个瓶颈层的输出
+    都经过坐标注意力增强。坐标注意力能够精确编码特征的空间位置信息，
+    对小目标检测场景（如遥感船舶检测）特别有效。
+
+    设计动机:
+        - 标准C2f模块缺乏显式的空间位置编码
+        - 小目标在深层特征中容易丢失位置信息
+        - 坐标注意力以极低的计算代价引入精确的H/W方向位置信息
+        - 适用于小模型（YOLOv8n/s），参数增量可控
+
+    网络结构:
+        输入 -> 1x1卷积 -> split为两路
+                 ↓
+          [路径1: 直通]
+          [路径2: BottleneckCA × n (带坐标注意力)]
+                 ↓
+         拼接所有路径 -> 1x1卷积 -> 输出
+
+    Attributes:
+        c (int): 隐藏层通道数。
+        cv1 (Conv): 1x1输入卷积，通道扩展为2*c。
+        cv2 (Conv): 1x1输出卷积，融合所有分支的特征。
+        m (nn.ModuleList): BottleneckCA模块列表，每个都带坐标注意力。
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        """初始化C2f_CA模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            n (int): BottleneckCA重复次数（受depth_multiple缩放）。
+            shortcut (bool): 是否使用快捷连接。
+            g (int): 分组卷积的组数。
+            e (float): 通道扩展比例。
+        """
+        super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
+        # 核心改动: 将标准Bottleneck替换为BottleneckCA
+        # 每个BottleneckCA在标准卷积输出上添加坐标注意力
+        self.m = nn.ModuleList(
+            BottleneckCA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
+

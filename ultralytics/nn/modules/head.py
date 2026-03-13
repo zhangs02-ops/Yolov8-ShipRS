@@ -16,11 +16,22 @@ from ultralytics.utils.tal import dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, smart_inference_mode
 
 from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Proto26, RealNVP, Residual, SwiGLUFFN
-from .conv import Conv, DWConv
+from .conv import Conv, DWConv, ECA
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "OBB", "Classify", "Detect", "Pose", "RTDETRDecoder", "Segment", "YOLOEDetect", "YOLOESegment", "v10Detect"
+__all__ = (
+    "OBB",
+    "AdaptiveDetect",
+    "Classify",
+    "Detect",
+    "Pose",
+    "RTDETRDecoder",
+    "Segment",
+    "YOLOEDetect",
+    "YOLOESegment",
+    "v10Detect",
+)
 
 
 class Detect(nn.Module):
@@ -249,6 +260,136 @@ class Detect(nn.Module):
     def fuse(self) -> None:
         """Remove the one2many head for inference optimization."""
         self.cv2 = self.cv3 = None
+
+
+class FRM(nn.Module):
+    """特征精炼模块（Feature Refinement Module）。
+
+    使用空洞深度可分离卷积扩大感受野，结合ECA高效通道注意力增强特征表达。
+    具有尺度感知能力：对高分辨率特征图（检测小目标的P2/P3层）施加更强的增强。
+
+    设计动机:
+        - 小目标在特征图上仅占几个像素，需要更大的感受野来捕获上下文信息
+        - 空洞卷积能在不增加参数量的情况下扩大感受野
+        - ECA通道注意力进一步选择与小目标相关的通道特征
+        - 尺度感知权重使模型自动对小目标特征层（P2/P3）施加更强的增强
+
+    网络结构:
+        输入 -> 空洞深度卷积 -> BN -> 1x1卷积 -> ECA注意力 -> × 尺度权重 -> + 残差 -> 输出
+
+    Attributes:
+        scale_weight (float): 尺度感知增强权重，P2 > P3 > P4 > P5。
+        dw_conv (nn.Conv2d): 空洞深度可分离卷积，扩大感受野。
+        bn (nn.BatchNorm2d): 批归一化层。
+        pw_conv (Conv): 1x1逐点卷积，融合通道信息。
+        eca (ECA): 高效通道注意力模块。
+    """
+
+    def __init__(self, c1, scale_idx=0, num_scales=3):
+        """初始化特征精炼模块。
+
+        Args:
+            c1 (int): 输入/输出通道数。
+            scale_idx (int): 当前尺度索引（0=最小stride/最高分辨率，即P2或P3）。
+            num_scales (int): 总检测尺度数（如4尺度: P2/P3/P4/P5）。
+        """
+        super().__init__()
+        # 尺度感知权重: 越小的stride（越高分辨率）获得越大的增强权重
+        # P2(idx=0) -> 1.5, P3(idx=1) -> 1.33, P4(idx=2) -> 1.17, P5(idx=3) -> 1.0
+        self.scale_weight = 1.0 + 0.5 * (num_scales - 1 - scale_idx) / max(num_scales - 1, 1)
+
+        # 空洞深度可分离卷积: 对小尺度使用更大膨胀率以扩大感受野
+        # P2 -> dilation=3 (感受野7×7), P3 -> d=2 (5×5), P4/P5 -> d=1 (3×3)
+        dilation = max(1, 3 - scale_idx)
+        self.dw_conv = nn.Conv2d(c1, c1, 3, 1, padding=dilation, dilation=dilation, groups=c1, bias=False)
+        self.bn = nn.BatchNorm2d(c1)
+        self.pw_conv = Conv(c1, c1, 1)  # 1x1逐点卷积融合通道信息
+        self.eca = ECA(c1)              # 高效通道注意力
+
+    def forward(self, x):
+        """前向传播: 空洞深度卷积 -> BN -> 逐点卷积 -> ECA注意力 -> 尺度加权残差。
+
+        Args:
+            x (torch.Tensor): 输入特征图 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 精炼增强后的特征图 (B, C, H, W)。
+        """
+        residual = x
+        # 空洞深度卷积扩大感受野 -> BN -> 逐点卷积融合通道
+        x = self.pw_conv(self.bn(self.dw_conv(x)))
+        # ECA通道注意力选择关键通道
+        x = self.eca(x)
+        # 残差连接 + 尺度感知加权（小尺度特征获得更强增强）
+        return residual + x * self.scale_weight
+
+
+class AdaptiveDetect(Detect):
+    """自适应检测头（Adaptive Detection Head）。
+
+    继承标准Detect检测头，在每个检测分支前添加特征精炼模块（FRM），
+    使用空洞卷积扩大感受野并通过ECA通道注意力增强特征表达。
+    具有尺度感知能力，自动对小尺度特征（P2/P3）施加更强的增强。
+
+    专为船舶遥感小目标检测设计，保持轻量化以适配YOLOv8n/s小模型。
+
+    创新点:
+        1. 特征精炼模块（FRM）: 空洞深度卷积 + ECA注意力，增强小目标特征
+        2. 尺度感知机制: 自适应为不同尺度的特征图分配不同的增强强度
+        3. 轻量设计: 使用深度可分离卷积，参数增量仅约2-4%
+        4. 即插即用: 兼容标准Detect的所有功能（训练/推理/导出）
+
+    网络结构:
+        多尺度特征输入 [P2, P3, P4, P5]
+             ↓
+        FRM特征精炼（每个尺度独立处理）
+             ↓
+        标准Detect检测（cv2边框回归 + cv3分类）
+
+    Attributes:
+        frm (nn.ModuleList): 每个检测尺度对应的特征精炼模块。
+        其余属性继承自Detect。
+
+    Examples:
+        >>> detect = AdaptiveDetect(nc=5, ch=(64, 128, 256, 512))
+        >>> x = [torch.randn(1, 64, 160, 160), torch.randn(1, 128, 80, 80),
+        ...      torch.randn(1, 256, 40, 40), torch.randn(1, 512, 20, 20)]
+        >>> outputs = detect(x)
+    """
+
+    def __init__(self, nc=80, reg_max=16, end2end=False, ch=()):
+        """初始化自适应检测头。
+
+        Args:
+            nc (int): 检测类别数。
+            reg_max (int): DFL通道数（分布焦点损失的离散化bin数）。
+            end2end (bool): 是否使用端到端NMS-free检测模式。
+            ch (tuple): 各检测层的输入通道数，如 (64, 128, 256, 512)。
+        """
+        super().__init__(nc, reg_max, end2end, ch)
+        # 为每个检测尺度创建独立的特征精炼模块
+        # scale_idx=0 对应最高分辨率（P2），获得最强增强
+        # scale_idx=len(ch)-1 对应最低分辨率（P5），增强最弱
+        self.frm = nn.ModuleList(FRM(x, scale_idx=i, num_scales=len(ch)) for i, x in enumerate(ch))
+
+    def forward_head(self, x, box_head=None, cls_head=None):
+        """重写前向传播，在检测分支前应用FRM特征精炼。
+
+        对每个尺度的特征图先进行FRM增强（空洞卷积 + ECA注意力 + 尺度加权），
+        然后再送入标准的边框回归和分类分支。
+
+        Args:
+            x (list[torch.Tensor]): 多尺度特征图列表 [P2, P3, P4, P5]。
+            box_head: 边框回归分支（cv2）。
+            cls_head: 分类分支（cv3）。
+
+        Returns:
+            (dict): 包含 boxes、scores、feats 的预测字典。
+        """
+        # 对每个尺度的特征应用对应的FRM模块进行增强
+        x = [self.frm[i](xi) for i, xi in enumerate(x)]
+        # 调用父类的forward_head完成标准检测（边框回归 + 分类）
+        return super().forward_head(x, box_head, cls_head)
 
 
 class Segment(Detect):
