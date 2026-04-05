@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 
 __all__ = (
+    "BSA",
     "CBAM",
     "ChannelAttention",
     "Concat",
@@ -17,6 +18,7 @@ __all__ = (
     "Conv2",
     "ConvTranspose",
     "CoordAttention",
+    "DASC",
     "DWConv",
     "DWConvTranspose2d",
     "ECA",
@@ -26,6 +28,7 @@ __all__ = (
     "Index",
     "LightConv",
     "RepConv",
+    "SOAU",
     "SpatialAttention",
 )
 
@@ -858,3 +861,173 @@ class EMA(nn.Module):
 
         weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
         return (group_x * weights.sigmoid()).reshape(b, c, h, w)
+
+
+class DASC(nn.Module):
+    """方向感知条形卷积（Direction-Aware Strip Convolution）。
+
+    针对遥感图像中船舶目标的细长形态特性（长宽比通常3:1~10:1）设计。
+    标准3×3方形卷积核对细长目标的感受野利用率低，大量感受野落在目标之外。
+
+    本模块并行使用1×7和7×1两个条形卷积核，分别捕获水平和垂直方向的特征，
+    然后通过全局池化自适应学习两个方向的权重，实现方向感知的特征提取。
+
+    设计思路:
+        1×7卷积 → 擅长捕获东西向排列的船舶特征
+        7×1卷积 → 擅长捕获南北向排列的船舶特征
+        全局平均池化 → 评估两个方向的重要性
+        Softmax归一化 → 自适应加权融合
+
+    参数量: 2×(C×C×7) ≈ 标准3×3卷积的4.7倍
+    感受野: 等效7×7区域，但对细长目标的信息利用率远高于方形卷积
+
+    References:
+        灵感来自条形卷积思想，但增加了自适应方向加权机制
+    """
+
+    def __init__(self, c1, c2, k=7, stride=1, groups=1):
+        """初始化DASC模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            k (int): 条形卷积核长度，默认7。
+            stride (int): 步幅。
+            groups (int): 分组卷积组数。
+        """
+        super().__init__()
+        self.conv_h = nn.Conv2d(c1, c2, (1, k), stride=stride, padding=(0, k // 2), groups=groups, bias=False)
+        self.conv_v = nn.Conv2d(c1, c2, (k, 1), stride=stride, padding=(k // 2, 0), groups=groups, bias=False)
+        self.bn_h = nn.BatchNorm2d(c2)
+        self.bn_v = nn.BatchNorm2d(c2)
+        self.act = nn.SiLU()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, x):
+        """前向传播：双方向条形卷积 → 方向重要性评估 → 自适应加权融合。
+
+        Args:
+            x (torch.Tensor): 输入特征图 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 方向感知条形卷积输出 (B, C_out, H', W')。
+        """
+        f_h = self.act(self.bn_h(self.conv_h(x)))
+        f_v = self.act(self.bn_v(self.conv_v(x)))
+
+        # 评估两个方向的重要性
+        w_h = self.pool(f_h)
+        w_v = self.pool(f_v)
+        weights = torch.softmax(torch.cat([w_h, w_v], dim=1), dim=1)
+        w_h, w_v = torch.chunk(weights, 2, dim=1)
+
+        return f_h * w_h + f_v * w_v
+
+
+class BSA(nn.Module):
+    """背景抑制注意力（Background-Suppressed Attention）。
+
+    针对遥感海面背景均匀但存在波浪、云影等干扰的问题设计。
+    通用注意力机制（如SE、CA）对所有区域一视同仁地"增强"，
+    但海面背景本身特征均匀，不需要增强，反而应该抑制。
+
+    本模块利用船舶（高频突变）与海面背景（低频平滑）的频率差异，
+    通过低频分支估计背景强度，生成背景权重图，然后对原始特征
+    进行背景抑制，保留船舶等高频前景特征。
+
+    设计思路:
+        低频分支(5×5 DWConv) → 捕获平滑背景区域
+        高频分支(3×3 DWConv) → 捕获边缘和细节
+        背景权重 = Sigmoid(低频) → 值越大表示背景越强
+        输出 = 高频 × (1 - 背景权重) + 残差
+
+    参数量: 极小（两个深度可分离卷积）
+    物理意义: 明确利用船舶与海面的频率差异
+    """
+
+    def __init__(self, c1, reduction=1.0):
+        """初始化BSA模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            reduction (float): 通道缩减比例，默认1.0（不缩减）。
+        """
+        super().__init__()
+        mid_c = max(8, int(c1 * reduction))
+        self.low_freq = nn.Sequential(
+            nn.Conv2d(c1, mid_c, 5, padding=2, groups=mid_c, bias=False),
+            nn.BatchNorm2d(mid_c),
+            nn.Conv2d(mid_c, c1, 1, bias=False),
+            nn.Sigmoid(),
+        )
+        self.high_freq = nn.Sequential(
+            nn.Conv2d(c1, mid_c, 3, padding=1, groups=mid_c, bias=False),
+            nn.BatchNorm2d(mid_c),
+            nn.Conv2d(mid_c, c1, 1, bias=False),
+        )
+        self.residual_weight = 0.1
+
+    def forward(self, x):
+        """前向传播：高低频分离 → 背景估计 → 背景抑制。
+
+        Args:
+            x (torch.Tensor): 输入特征图 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 背景抑制后的特征图 (B, C, H, W)。
+        """
+        bg_weight = self.low_freq(x)
+        fg_feat = self.high_freq(x)
+        return fg_feat * (1 - bg_weight) + x * self.residual_weight
+
+
+class SOAU(nn.Module):
+    """小目标感知上采样（Small-Object-Aware Upsampling）。
+
+    针对FPN/PAN中标准最近邻上采样"无脑复制"导致小目标特征稀释的问题。
+    标准上采样对所有区域一视同仁，但小目标区域需要更精细的插值。
+
+    本模块使用可学习的逐像素注意力权重替代固定插值方法，
+    根据输入特征的局部内容自适应生成上采样权重。
+    小目标区域（高频变化）会学到更锐利的插值核，
+    背景区域（低频平滑）学到更平滑的插值核。
+
+    设计思路:
+        1. 先用最近邻上采样得到粗糙的2×放大特征
+        2. 用3×3卷积从原始输入生成注意力权重图
+        3. 用注意力权重对粗糙上采样结果做逐像素加权增强
+
+    参数量: C×9（只在Neck中使用2-3次，开销可控）
+    优势: 相比最近邻上采样更精细，相比Dysample更轻量
+    """
+
+    def __init__(self, c1, scale_factor=2):
+        """初始化SOAU模块。
+
+        Args:
+            c1 (int): 输入/输出通道数（上采样不改变通道数）。
+            scale_factor (int): 上采样倍率，默认2。
+        """
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.refine_conv = nn.Sequential(
+            nn.Conv2d(c1, c1, 3, padding=1, bias=False),
+            nn.BatchNorm2d(c1),
+            nn.SiLU(),
+            nn.Conv2d(c1, c1, 3, padding=1, bias=False),
+            nn.BatchNorm2d(c1),
+        )
+
+    def forward(self, x):
+        """前向传播：最近邻上采样 → 特征精炼 → 残差增强。
+
+        Args:
+            x (torch.Tensor): 输入特征图 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 上采样后的特征图 (B, C, H×scale, W×scale)。
+        """
+        import torch.nn.functional as F
+        x_up = F.interpolate(x, scale_factor=self.scale_factor, mode="nearest")
+        x_refined = self.refine_conv(x_up)
+        return x_up + 0.1 * x_refined

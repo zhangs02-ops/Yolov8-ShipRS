@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, CoordAttention, DWConv, EMA, GhostConv, LightConv, RepConv, autopad
+from .conv import BSA, Conv, CoordAttention, DASC, DWConv, EMA, GhostConv, LightConv, RepConv, SOAU, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -17,7 +17,9 @@ __all__ = (
     "C1",
     "C2",
     "C2PSA",
+    "C2f_BSA",
     "C2f_CA",
+    "C2f_DASC",
     "C2f_EMA",
     "C3",
     "C3TR",
@@ -33,8 +35,10 @@ __all__ = (
     "Attention",
     "BNContrastiveHead",
     "Bottleneck",
+    "BottleneckBSA",
     "BottleneckCA",
     "BottleneckCSP",
+    "BottleneckDASC",
     "BottleneckEMA",
     "C2f",
     "C2fAttn",
@@ -2324,4 +2328,110 @@ class ASFF(nn.Module):
         )
         out = self.expand(fused_out_reduced)
         return out
+
+
+class BottleneckDASC(Bottleneck):
+    """带DASC方向感知条形卷积的瓶颈模块。
+
+    将标准Bottleneck中的3×3卷积替换为DASC条形卷积，
+    使网络能自适应捕获船舶目标的水平和垂直方向特征。
+    """
+
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        """初始化BottleneckDASC。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            shortcut (bool): 是否使用残差连接。
+            g (int): 分组卷积组数。
+            k (tuple): 卷积核大小（忽略，使用DASC默认7）。
+            e (float): 通道扩展比例。
+        """
+        super().__init__(c1, c2, shortcut, g, k, e)
+        c_ = int(c2 * e)
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        self.cv2 = DASC(c_, c2)
+        self.add = shortcut and c1 == c2
+
+
+class C2f_DASC(C2f):
+    """带DASC方向感知条形卷积的C2f模块。
+
+    将C2f中的标准Bottleneck替换为BottleneckDASC，
+    使每个瓶颈层都能自适应捕获船舶的细长方向特征。
+
+    适用场景:
+        - Backbone中替代标准C2f，提升对细长船舶的特征提取能力
+        - 特别适合遥感图像中方向任意的船舶目标
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        """初始化C2f_DASC模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            n (int): BottleneckDASC重复次数。
+            shortcut (bool): 是否使用快捷连接。
+            g (int): 分组卷积组数。
+            e (float): 通道扩展比例。
+        """
+        super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
+        self.m = nn.ModuleList(
+            BottleneckDASC(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
+
+
+class BottleneckBSA(Bottleneck):
+    """带背景抑制注意力的瓶颈模块。
+
+    在标准Bottleneck的第二个卷积后添加BSA背景抑制注意力，
+    抑制海面背景干扰，增强船舶前景特征。
+    """
+
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        """初始化BottleneckBSA。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            shortcut (bool): 是否使用残差连接。
+            g (int): 分组卷积组数。
+            k (tuple): 两个卷积层的卷积核大小。
+            e (float): 通道扩展比例。
+        """
+        super().__init__(c1, c2, shortcut, g, k, e)
+        c_ = int(c2 * e)
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        self.cv2 = nn.Sequential(Conv(c_, c2, k[1], 1, g=g), BSA(c2))
+        self.add = shortcut and c1 == c2
+
+
+class C2f_BSA(C2f):
+    """带背景抑制注意力的C2f模块。
+
+    将C2f中的标准Bottleneck替换为BottleneckBSA，
+    使每个瓶颈层的输出都经过背景抑制注意力增强。
+
+    适用场景:
+        - Neck特征融合层中替代标准C2f，抑制海面背景对融合特征的干扰
+        - 特别适合波浪、云影等复杂海况下的船舶检测
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        """初始化C2f_BSA模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            n (int): BottleneckBSA重复次数。
+            shortcut (bool): 是否使用快捷连接。
+            g (int): 分组卷积组数。
+            e (float): 通道扩展比例。
+        """
+        super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
+        self.m = nn.ModuleList(
+            BottleneckBSA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
 

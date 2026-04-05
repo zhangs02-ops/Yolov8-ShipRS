@@ -13,17 +13,22 @@ import torch.nn as nn
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
     AIFI,
+    BSA,
     C1,
     C2,
     C2PSA,
+    C2f_BSA,
     C2f_CA,
+    C2f_DASC,
     C2f_EMA,
     C3,
     C3TR,
+    DASC,
     ELAN1,
     OBB,
     OBB26,
     PSA,
+    SOAU,
     SPP,
     SPPELAN,
     SPPF,
@@ -32,7 +37,9 @@ from ultralytics.nn.modules import (
     ADown,
     AdaptiveDetect,
     Bottleneck,
+    BottleneckBSA,
     BottleneckCSP,
+    BottleneckDASC,
     C2f,
     C2fAttn,
     C2fCIB,
@@ -1582,6 +1589,8 @@ def parse_model(d, ch, verbose=True):
             ConvTranspose,
             GhostConv,
             Bottleneck,
+            BottleneckBSA,
+            BottleneckDASC,
             GhostBottleneck,
             SPP,
             SPPF,
@@ -1593,7 +1602,9 @@ def parse_model(d, ch, verbose=True):
             C1,
             C2,
             C2f,
+            C2f_BSA,
             C2f_CA,
+            C2f_DASC,
             C2f_EMA,
             C3k2,
             RepNCSPELAN4,
@@ -1613,6 +1624,8 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            DASC,
+            BSA,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1621,7 +1634,9 @@ def parse_model(d, ch, verbose=True):
             C1,
             C2,
             C2f,
+            C2f_BSA,
             C2f_CA,
+            C2f_DASC,
             C2f_EMA,
             C3k2,
             C2fAttn,
@@ -1716,8 +1731,15 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [c1, c2, *args[1:]]
+        elif m is SOAU:
+            c1 = ch[f]
+            c2 = c1
+            sf = args[0] if args else 2
+            args = [c1, sf]
         elif m is CBFuse:
             c2 = ch[f[-1]]
+        elif m is SOAU:
+            c2 = ch[f]
         elif m in frozenset({TorchVision, Index}):
             c2 = args[0]
             c1 = ch[f]
