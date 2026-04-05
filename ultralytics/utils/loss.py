@@ -14,7 +14,7 @@ from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import autocast
 
-from .metrics import bbox_iou, probiou
+from .metrics import bbox_iou, bbox_nwd, bbox_shape_iou, probiou
 from .tal import bbox2dist, rbox2dist
 
 
@@ -109,10 +109,13 @@ class DFLoss(nn.Module):
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes."""
 
-    def __init__(self, reg_max: int = 16):
+    def __init__(self, reg_max: int = 16, use_nwd: bool = False, nwd_c: float = 2.0, use_shape_iou: bool = False):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
+        self.use_nwd = use_nwd
+        self.nwd_c = nwd_c
+        self.use_shape_iou = use_shape_iou
 
     def forward(
         self,
@@ -126,9 +129,14 @@ class BboxLoss(nn.Module):
         imgsz: torch.Tensor,
         stride: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute IoU and DFL losses for bounding boxes."""
+        """Compute IoU (or NWD/Shape-IoU) and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+        if self.use_nwd:
+            iou = bbox_nwd(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, C=self.nwd_c)
+        elif self.use_shape_iou:
+            iou = bbox_shape_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False)
+        else:
+            iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
@@ -349,6 +357,10 @@ class v8DetectionLoss:
 
         self.use_dfl = m.reg_max > 1
 
+        use_nwd = getattr(h, "nwd", False)
+        nwd_c = getattr(h, "nwd_c", 2.0)
+        use_shape_iou = getattr(h, "shape_iou", False)
+
         self.assigner = TaskAlignedAssigner(
             topk=tal_topk,
             num_classes=self.nc,
@@ -356,8 +368,10 @@ class v8DetectionLoss:
             beta=6.0,
             stride=self.stride.tolist(),
             topk2=tal_topk2,
+            use_nwd=use_nwd,
+            nwd_c=nwd_c,
         )
-        self.bbox_loss = BboxLoss(m.reg_max).to(device)
+        self.bbox_loss = BboxLoss(m.reg_max, use_nwd=use_nwd, nwd_c=nwd_c, use_shape_iou=use_shape_iou).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
     def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:

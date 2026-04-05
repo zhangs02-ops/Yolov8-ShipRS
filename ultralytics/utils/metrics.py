@@ -147,6 +147,122 @@ def bbox_iou(
     return iou  # IoU
 
 
+def bbox_nwd(
+    box1: torch.Tensor,
+    box2: torch.Tensor,
+    xywh: bool = True,
+    C: float = 2.0,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """Calculate Normalized Wasserstein Distance (NWD) between bounding boxes.
+
+    Models each bounding box as a 2D Gaussian distribution and computes the 2nd Wasserstein
+    distance, then normalizes to [0, 1] via exp(-sqrt(W2) / C). Designed for small object
+    detection where IoU is overly sensitive to minor localization errors.
+
+    Args:
+        box1 (torch.Tensor): Bounding boxes, last dimension 4.
+        box2 (torch.Tensor): Bounding boxes, last dimension 4.
+        xywh (bool): If True, input is (cx, cy, w, h). If False, input is (x1, y1, x2, y2).
+        C (float): Normalizing constant. Larger C = more tolerance for distance.
+        eps (float): Small value to avoid division by zero.
+
+    Returns:
+        (torch.Tensor): NWD similarity values in [0, 1].
+
+    References:
+        https://arxiv.org/abs/2110.13389
+    """
+    if xywh:
+        (cx1, cy1, w1, h1), (cx2, cy2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+    else:
+        # Convert xyxy to center/size
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        cx1, cy1 = (b1_x1 + b1_x2) / 2, (b1_y1 + b1_y2) / 2
+        cx2, cy2 = (b2_x1 + b2_x2) / 2, (b2_y1 + b2_y2) / 2
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
+
+    # 2nd Wasserstein distance squared between two 2D Gaussians with diagonal covariance
+    # Gaussian: N(mu, Sigma) where mu=(cx,cy), Sigma=diag((w/2)^2, (h/2)^2)
+    # W2^2 = ||mu1-mu2||^2 + ||Sigma1^(1/2) - Sigma2^(1/2)||_F^2
+    w2_dist = (cx1 - cx2).pow(2) + (cy1 - cy2).pow(2) + (w1 / 2 - w2 / 2).pow(2) + (h1 / 2 - h2 / 2).pow(2)
+
+    return torch.exp(-(w2_dist + eps).sqrt() / C)
+
+
+def bbox_shape_iou(
+    box1: torch.Tensor,
+    box2: torch.Tensor,
+    xywh: bool = True,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """Calculate Shape-IoU loss between bounding boxes.
+
+    Shape-IoU considers the shape (width/height ratio) difference between
+    predicted and ground truth boxes. It applies scale-specific weights to
+    width and height components, making it more sensitive to shape variations
+    than standard CIoU. Particularly effective for non-square objects like ships.
+
+    Args:
+        box1 (torch.Tensor): Predicted bounding boxes, last dimension 4.
+        box2 (torch.Tensor): Ground truth bounding boxes, last dimension 4.
+        xywh (bool): If True, input is (cx, cy, w, h). If False, input is (x1, y1, x2, y2).
+        eps (float): Small value to avoid division by zero.
+
+    Returns:
+        (torch.Tensor): Shape-IoU values (higher = better overlap).
+
+    References:
+        https://arxiv.org/abs/2312.16253
+    """
+    if xywh:
+        (cx1, cy1, w1, h1), (cx2, cy2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        cx1, cy1 = (b1_x1 + b1_x2) / 2, (b1_y1 + b1_y2) / 2
+        cx2, cy2 = (b2_x1 + b2_x2) / 2, (b2_y1 + b2_y2) / 2
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
+
+    # Convert to xyxy for intersection/union
+    b1_x1, b1_y1 = cx1 - w1 / 2, cy1 - h1 / 2
+    b1_x2, b1_y2 = cx1 + w1 / 2, cy1 + h1 / 2
+    b2_x1, b2_y1 = cx2 - w2 / 2, cy2 - h2 / 2
+    b2_x2, b2_y2 = cx2 + w2 / 2, cy2 + h2 / 2
+
+    # Intersection
+    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp(0) * (
+        b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)
+    ).clamp(0)
+    union = w1 * h1 + w2 * h2 - inter + eps
+    iou = inter / union
+
+    # Convex hull diagonal
+    cw = (b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)).clamp(eps)
+    ch = (b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)).clamp(eps)
+
+    # Shape penalty: width and height differences normalized by convex hull
+    # Compute shape-aware weights based on relative size difference
+    w_ratio = (w1 / (w2 + eps)).clamp(eps, 1.0 / eps)
+    h_ratio = (h1 / (h2 + eps)).clamp(eps, 1.0 / eps)
+
+    # Shape-specific weight: larger weight for dimension with bigger relative difference
+    # When w1 >> w2 or w2 >> w1, the width penalty should be larger
+    w_penalty = (1 - 1 / (w_ratio + 1 / w_ratio)) ** 2  # [0, 1]
+    h_penalty = (1 - 1 / (h_ratio + 1 / h_ratio)) ** 2  # [0, 1]
+
+    # Center distance penalty (same as DIoU)
+    rho2 = ((cx1 - cx2).pow(2) + (cy1 - cy2).pow(2)) / (cw.pow(2) + ch.pow(2) + eps)
+
+    # Shape-IoU = IoU - center_distance_penalty - shape_penalty
+    # Weight shape penalty by convex area ratio to give more weight to larger boxes
+    shape_iou = iou - rho2 - (w_penalty + h_penalty) / 2
+    return shape_iou
+
+
 def mask_iou(mask1: torch.Tensor, mask2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
     """Calculate masks IoU.
 

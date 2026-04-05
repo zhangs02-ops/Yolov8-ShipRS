@@ -102,6 +102,9 @@ warmup_bias_lr: 0.1 # (float) bias learning rate during warmup
 box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) classification loss gain
 dfl: 1.5 # (float) distribution focal loss gain
+nwd: False # (bool) use NWD loss instead of CIoU for bbox regression (small object detection)
+nwd_c: 2.0 # (float) NWD normalizing constant C; larger = more tolerant to distance
+shape_iou: False # (bool) use Shape-IoU loss instead of CIoU for bbox regression (non-square targets like ships)
 pose: 12.0 # (float) pose loss gain (pose tasks)
 kobj: 1.0 # (float) keypoint objectness loss gain (pose tasks)
 rle: 1.0 # (float) rle loss gain (pose tasks)

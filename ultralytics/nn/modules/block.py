@@ -9,14 +9,16 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, CoordAttention, DWConv, GhostConv, LightConv, RepConv, autopad
+from .conv import Conv, CoordAttention, DWConv, EMA, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
+    "ASFF",
     "C1",
     "C2",
     "C2PSA",
     "C2f_CA",
+    "C2f_EMA",
     "C3",
     "C3TR",
     "CIB",
@@ -33,6 +35,7 @@ __all__ = (
     "Bottleneck",
     "BottleneckCA",
     "BottleneckCSP",
+    "BottleneckEMA",
     "C2f",
     "C2fAttn",
     "C2fCIB",
@@ -2167,4 +2170,158 @@ class C2f_CA(C2f):
         self.m = nn.ModuleList(
             BottleneckCA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
         )
+
+
+class BottleneckEMA(Bottleneck):
+    """带EMA高效多尺度注意力的瓶颈模块。
+
+    在标准Bottleneck的第二个卷积后添加EMA注意力，通过三分支并行
+    （1D水平、1D垂直、1x1）提取多尺度空间特征，增强特征表达能力。
+
+    Attributes:
+        cv1 (Conv): 第一个卷积（降维）。
+        cv2 (Conv): 第二个卷积（升维）+ EMA注意力。
+        add (bool): 是否使用残差连接。
+    """
+
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        """初始化BottleneckEMA。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            shortcut (bool): 是否使用残差连接。
+            g (int): 分组卷积组数。
+            k (tuple): 两个卷积层的卷积核大小。
+            e (float): 通道扩展比例。
+        """
+        super().__init__(c1, c2, shortcut, g, k, e)
+        c_ = int(c2 * e)
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        self.cv2 = nn.Sequential(Conv(c_, c2, k[1], 1, g=g), EMA(c2))
+        self.add = shortcut and c1 == c2
+
+
+class C2f_EMA(C2f):
+    """带EMA注意力增强的C2f模块。
+
+    将C2f中的标准Bottleneck替换为BottleneckEMA，使每个瓶颈层的输出
+    都经过EMA高效多尺度注意力增强。EMA通过三分支并行结构捕获多尺度
+    空间特征，对小目标检测特别有效且计算开销低。
+
+    网络结构:
+        输入 -> 1x1卷积 -> split为两路
+                 ↓
+          [路径1: 直通]
+          [路径2: BottleneckEMA × n (带EMA注意力)]
+                 ↓
+         拼接所有路径 -> 1x1卷积 -> 输出
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        """初始化C2f_EMA模块。
+
+        Args:
+            c1 (int): 输入通道数。
+            c2 (int): 输出通道数。
+            n (int): BottleneckEMA重复次数。
+            shortcut (bool): 是否使用快捷连接。
+            g (int): 分组卷积组数。
+            e (float): 通道扩展比例。
+        """
+        super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
+        self.m = nn.ModuleList(
+            BottleneckEMA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
+
+
+class ASFF(nn.Module):
+    """自适应空间特征融合模块（Adaptive Spatial Feature Fusion）。
+
+    对多个不同尺度的特征图进行自适应加权融合，让网络自动学习
+    每个尺度特征的重要性权重。解决传统FPN中直接concat或add导致的
+    特征冲突问题，特别适合小目标与大目标共存的场景。
+
+    References:
+        https://arxiv.org/abs/1911.09516
+    """
+
+    def __init__(self, level, multiplier=1, rfb=False, vis=False):
+        """初始化ASFF模块。
+
+        Args:
+            level (int): 当前融合层级，决定输入特征的尺度关系。
+            multiplier (int): 通道数倍率。
+            rfb (bool): 是否使用RFB模块。
+            vis (bool): 是否可视化注意力权重。
+        """
+        super().__init__()
+        self.level = level
+        self.dim = [int(64 * multiplier), int(128 * multiplier), int(256 * multiplier), int(512 * multiplier)]
+        self.inter_dim = self.dim[self.level]
+
+        compress_c = 8 if rfb else 16
+
+        if level == 0:
+            self.stride_level_1 = Conv(self.dim[1], self.inter_dim, 3, 2)
+            self.stride_level_2 = Conv(self.dim[2], self.inter_dim, 3, 2)
+            self.expand = Conv(self.inter_dim, self.dim[0], 3, 1)
+        elif level == 1:
+            self.compress_level_0 = Conv(self.dim[0], self.inter_dim, 1, 1)
+            self.stride_level_2 = Conv(self.dim[2], self.inter_dim, 3, 2)
+            self.expand = Conv(self.inter_dim, self.dim[1], 3, 1)
+        elif level == 2:
+            self.compress_level_0 = Conv(self.dim[0], self.inter_dim, 1, 1)
+            self.compress_level_1 = Conv(self.dim[1], self.inter_dim, 1, 1)
+            self.expand = Conv(self.inter_dim, self.dim[2], 3, 1)
+
+        compress_c = 8 if rfb else 16
+        self.weight_level_0 = Conv(self.inter_dim, compress_c, 1, 1)
+        self.weight_level_1 = Conv(self.inter_dim, compress_c, 1, 1)
+        self.weight_level_2 = Conv(self.inter_dim, compress_c, 1, 1)
+        self.weight_levels = Conv(compress_c * 3, 3, 1, 1)
+        self.vis = vis
+
+    def forward(self, x):
+        """前向传播：多尺度特征对齐 -> 权重计算 -> 自适应加权融合。
+
+        Args:
+            x (list[torch.Tensor]): 三个尺度的输入特征 [level0, level1, level2]。
+
+        Returns:
+            (torch.Tensor): 自适应融合后的特征图。
+        """
+        x_level_0, x_level_1, x_level_2 = x[0], x[1], x[2]
+
+        if self.level == 0:
+            level_0_resized = x_level_0
+            level_1_resized = self.stride_level_1(x_level_1)
+            level_2_downsampled_intra = F.max_pool2d(x_level_2, 3, 2, 1)
+            level_2_resized = self.stride_level_2(x_level_2)
+        elif self.level == 1:
+            level_0_compressed = self.compress_level_0(x_level_0)
+            level_0_resized = F.interpolate(level_0_compressed, scale_factor=2, mode="nearest")
+            level_1_resized = x_level_1
+            level_2_resized = self.stride_level_2(x_level_2)
+        elif self.level == 2:
+            level_0_compressed = self.compress_level_0(x_level_0)
+            level_0_resized = F.interpolate(level_0_compressed, scale_factor=4, mode="nearest")
+            level_1_compressed = self.compress_level_1(x_level_1)
+            level_1_resized = F.interpolate(level_1_compressed, scale_factor=2, mode="nearest")
+            level_2_resized = x_level_2
+
+        level_0_weight_v = self.weight_level_0(level_0_resized)
+        level_1_weight_v = self.weight_level_1(level_1_resized)
+        level_2_weight_v = self.weight_level_2(level_2_resized)
+        levels_weight_v = torch.cat((level_0_weight_v, level_1_weight_v, level_2_weight_v), 1)
+        levels_weight = self.weight_levels(levels_weight_v)
+        levels_weight = F.softmax(levels_weight, dim=1)
+
+        fused_out_reduced = (
+            level_0_resized * levels_weight[:, 0:1, :, :]
+            + level_1_resized * levels_weight[:, 1:2, :, :]
+            + level_2_resized * levels_weight[:, 2:3, :, :]
+        )
+        out = self.expand(fused_out_reduced)
+        return out
 

@@ -18,10 +18,12 @@ Examples:
 """
 
 from .block import (
+    ASFF,
     C1,
     C2,
     C2PSA,
     C2f_CA,
+    C2f_EMA,
     C3,
     C3TR,
     CIB,
@@ -39,6 +41,7 @@ from .block import (
     Bottleneck,
     BottleneckCA,
     BottleneckCSP,
+    BottleneckEMA,
     C2f,
     C2fAttn,
     C2fCIB,
@@ -73,6 +76,7 @@ from .conv import (
     DWConv,
     DWConvTranspose2d,
     ECA,
+    EMA,
     Focus,
     GhostConv,
     Index,
@@ -113,10 +117,12 @@ from .transformer import (
 
 __all__ = (
     "AIFI",
+    "ASFF",
     "C1",
     "C2",
     "C2PSA",
     "C2f_CA",
+    "C2f_EMA",
     "C3",
     "C3TR",
     "CBAM",
@@ -124,6 +130,7 @@ __all__ = (
     "DFL",
     "ECA",
     "ELAN1",
+    "EMA",
     "MLP",
     "OBB",
     "OBB26",
@@ -140,6 +147,7 @@ __all__ = (
     "Bottleneck",
     "BottleneckCA",
     "BottleneckCSP",
+    "BottleneckEMA",
     "C2f",
     "C2fAttn",
     "C2fCIB",

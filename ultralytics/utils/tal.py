@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from . import LOGGER
-from .metrics import bbox_iou, probiou
+from .metrics import bbox_iou, bbox_nwd, probiou
 from .ops import xywh2xyxy, xywhr2xyxyxyxy, xyxy2xywh
 from .torch_utils import TORCH_1_11
 
@@ -37,6 +37,8 @@ class TaskAlignedAssigner(nn.Module):
         stride: list = [8, 16, 32],
         eps: float = 1e-9,
         topk2=None,
+        use_nwd: bool = False,
+        nwd_c: float = 2.0,
     ):
         """Initialize a TaskAlignedAssigner object with customizable hyperparameters.
 
@@ -48,6 +50,8 @@ class TaskAlignedAssigner(nn.Module):
             stride (list, optional): List of stride values for different feature levels.
             eps (float, optional): A small value to prevent division by zero.
             topk2 (int, optional): Secondary topk value for additional filtering.
+            use_nwd (bool, optional): Use NWD instead of CIoU for small object detection.
+            nwd_c (float, optional): NWD normalizing constant.
         """
         super().__init__()
         self.topk = topk
@@ -58,6 +62,8 @@ class TaskAlignedAssigner(nn.Module):
         self.stride = stride
         self.stride_val = self.stride[1] if len(self.stride) > 1 else self.stride[0]
         self.eps = eps
+        self.use_nwd = use_nwd
+        self.nwd_c = nwd_c
 
     @torch.no_grad()
     def forward(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
@@ -203,15 +209,17 @@ class TaskAlignedAssigner(nn.Module):
         return align_metric, overlaps
 
     def iou_calculation(self, gt_bboxes, pd_bboxes):
-        """Calculate IoU for horizontal bounding boxes.
+        """Calculate IoU (or NWD) for horizontal bounding boxes.
 
         Args:
             gt_bboxes (torch.Tensor): Ground truth boxes.
             pd_bboxes (torch.Tensor): Predicted boxes.
 
         Returns:
-            (torch.Tensor): IoU values between each pair of boxes.
+            (torch.Tensor): IoU or NWD values between each pair of boxes.
         """
+        if self.use_nwd:
+            return bbox_nwd(gt_bboxes, pd_bboxes, xywh=False, C=self.nwd_c).squeeze(-1).clamp_(0)
         return bbox_iou(gt_bboxes, pd_bboxes, xywh=False, CIoU=True).squeeze(-1).clamp_(0)
 
     def select_topk_candidates(self, metrics, topk_mask=None):
