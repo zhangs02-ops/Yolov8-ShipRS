@@ -192,6 +192,71 @@ def bbox_nwd(
     return torch.exp(-(w2_dist + eps).sqrt() / C)
 
 
+def bbox_sadl(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    xywh: bool = True,
+    alpha: float = 0.5,
+    beta: float = 0.3,
+    C: float = 2.0,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """尺度感知分布损失（Scale-Aware Distribution Loss）。
+
+    针对遥感船舶小目标检测的独特难点设计：
+    1. 尺度极端：同一图像中渔船几像素、货船上百像素
+    2. 细长形态：船舶长宽比通常 3:1~10:1
+
+    在 NWD（归一化 Wasserstein 距离）基础上引入尺度感知权重和形状感知权重：
+    SADL = (1 - NWD) × W_scale × W_shape
+
+    W_scale: 小目标获得更强监督信号，面积越小权重越大
+    W_shape: 长宽比偏差额外惩罚，船舶是细长目标，形状不能错
+
+    Args:
+        pred (torch.Tensor): 预测框，形状 (N, 4)。
+        target (torch.Tensor): 真实框，形状 (N, 4)。
+        xywh (bool): 输入格式是否为 (cx, cy, w, h)。
+        alpha (float): 尺度感知权重系数，默认 0.5。
+        beta (float): 形状感知权重系数，默认 0.3。
+        C (float): NWD 归一化常数。
+        eps (float): 防止除零的小值。
+
+    Returns:
+        (torch.Tensor): SADL 损失值，形状 (N, 1)。
+    """
+    # 1. 基础 NWD 距离
+    nwd = bbox_nwd(pred, target, xywh=xywh, C=C, eps=eps)
+    base_loss = 1.0 - nwd
+
+    # 2. 尺度感知权重：小目标获得更强监督
+    if xywh:
+        gt_w, gt_h = target[..., 2], target[..., 3]
+    else:
+        gt_w = target[..., 2] - target[..., 0]
+        gt_h = target[..., 3] - target[..., 1]
+    gt_area = gt_w * gt_h
+    ref_area = 640.0 * 640.0  # 标准输入图像面积
+    scale_ratio = gt_area / (ref_area + eps)
+    w_scale = 1.0 + alpha * (1.0 - scale_ratio.clamp(0, 1))
+
+    # 3. 形状感知权重：长宽比偏差惩罚
+    if xywh:
+        pred_w, pred_h = pred[..., 2], pred[..., 3]
+        target_w, target_h = target[..., 2], target[..., 3]
+    else:
+        pred_w = pred[..., 2] - pred[..., 0]
+        pred_h = pred[..., 3] - pred[..., 1]
+        target_w = target[..., 2] - target[..., 0]
+        target_h = target[..., 3] - target[..., 1]
+    pred_ar = pred_w / (pred_h + eps)
+    target_ar = target_w / (target_h + eps)
+    ar_diff = (pred_ar - target_ar).abs() / (target_ar + eps)
+    w_shape = 1.0 + beta * ar_diff.clamp(0, 2)
+
+    return (base_loss * w_scale * w_shape).unsqueeze(-1)
+
+
 def bbox_shape_iou(
     box1: torch.Tensor,
     box2: torch.Tensor,

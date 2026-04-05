@@ -105,6 +105,9 @@ dfl: 1.5 # (float) distribution focal loss gain
 nwd: False # (bool) use NWD loss instead of CIoU for bbox regression (small object detection)
 nwd_c: 2.0 # (float) NWD normalizing constant C; larger = more tolerant to distance
 shape_iou: False # (bool) use Shape-IoU loss instead of CIoU for bbox regression (non-square targets like ships)
+sadl: False # (bool) use SADL (Scale-Aware Distribution Loss) for ship small object detection
+sadl_alpha: 0.5 # (float) SADL scale-aware weight coefficient (small target emphasis)
+sadl_beta: 0.3 # (float) SADL shape-aware weight coefficient (aspect ratio penalty)
 pose: 12.0 # (float) pose loss gain (pose tasks)
 kobj: 1.0 # (float) keypoint objectness loss gain (pose tasks)
 rle: 1.0 # (float) rle loss gain (pose tasks)

@@ -3,7 +3,7 @@
 # YOLOv8-DASC: 方向感知条形卷积消融实验
 # 仅将 Backbone 的 P3/P4 层替换为 C2f_DASC，其余与 ShipRS-v3 一致
 
-nc: 80
+nc: 1
 scales:
   n: [0.33, 0.25, 1024]
   s: [0.33, 0.50, 1024]

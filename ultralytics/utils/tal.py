@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from . import LOGGER
-from .metrics import bbox_iou, bbox_nwd, probiou
+from .metrics import bbox_iou, bbox_nwd, bbox_sadl, probiou
 from .ops import xywh2xyxy, xywhr2xyxyxyxy, xyxy2xywh
 from .torch_utils import TORCH_1_11
 
@@ -39,6 +39,9 @@ class TaskAlignedAssigner(nn.Module):
         topk2=None,
         use_nwd: bool = False,
         nwd_c: float = 2.0,
+        use_sadl: bool = False,
+        sadl_alpha: float = 0.5,
+        sadl_beta: float = 0.3,
     ):
         """Initialize a TaskAlignedAssigner object with customizable hyperparameters.
 
@@ -52,6 +55,9 @@ class TaskAlignedAssigner(nn.Module):
             topk2 (int, optional): Secondary topk value for additional filtering.
             use_nwd (bool, optional): Use NWD instead of CIoU for small object detection.
             nwd_c (float, optional): NWD normalizing constant.
+            use_sadl (bool, optional): Use SADL (Scale-Aware Distribution Loss) for ship detection.
+            sadl_alpha (float, optional): SADL scale-aware weight coefficient.
+            sadl_beta (float, optional): SADL shape-aware weight coefficient.
         """
         super().__init__()
         self.topk = topk
@@ -64,6 +70,9 @@ class TaskAlignedAssigner(nn.Module):
         self.eps = eps
         self.use_nwd = use_nwd
         self.nwd_c = nwd_c
+        self.use_sadl = use_sadl
+        self.sadl_alpha = sadl_alpha
+        self.sadl_beta = sadl_beta
 
     @torch.no_grad()
     def forward(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
@@ -209,7 +218,7 @@ class TaskAlignedAssigner(nn.Module):
         return align_metric, overlaps
 
     def iou_calculation(self, gt_bboxes, pd_bboxes):
-        """Calculate IoU (or NWD) for horizontal bounding boxes.
+        """Calculate IoU (or NWD/SADL) for horizontal bounding boxes.
 
         Args:
             gt_bboxes (torch.Tensor): Ground truth boxes.
@@ -218,6 +227,11 @@ class TaskAlignedAssigner(nn.Module):
         Returns:
             (torch.Tensor): IoU or NWD values between each pair of boxes.
         """
+        if self.use_sadl:
+            # SADL returns loss, convert to similarity metric for assigner
+            sadl_loss = bbox_sadl(gt_bboxes, pd_bboxes, xywh=False,
+                                  alpha=self.sadl_alpha, beta=self.sadl_beta).squeeze(-1)
+            return (1.0 - sadl_loss).clamp_(0)
         if self.use_nwd:
             return bbox_nwd(gt_bboxes, pd_bboxes, xywh=False, C=self.nwd_c).squeeze(-1).clamp_(0)
         return bbox_iou(gt_bboxes, pd_bboxes, xywh=False, CIoU=True).squeeze(-1).clamp_(0)
