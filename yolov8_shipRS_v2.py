@@ -1,4 +1,5 @@
-"""ShipRS-v2 训练脚本（完整模型：渐进式融合 + EMA + Shape-IoU）"""
+"""ShipRS-v2 训练脚本（完整模型：渐进式融合 + EMA + Shape-IoU）."""
+
 from ultralytics import YOLO
 
 model = YOLO("yolov8-ShipRS-v2.yaml")
