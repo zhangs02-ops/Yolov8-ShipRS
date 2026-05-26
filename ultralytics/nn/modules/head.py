@@ -21,6 +21,8 @@ from .transformer import MLP, DeformableTransformerDecoder, DeformableTransforme
 from .utils import bias_init_with_prob, linear_init
 
 __all__ = (
+    "DyBlock",
+    "DyHeadDetect",
     "OBB",
     "AdaptiveDetect",
     "Classify",
@@ -28,10 +30,32 @@ __all__ = (
     "Pose",
     "RTDETRDecoder",
     "Segment",
+    "WeightBlock",
     "YOLOEDetect",
     "YOLOESegment",
     "v10Detect",
 )
+
+
+class WeightBlock(nn.Module):
+    """Channel attention block used by MVD-YOLOv8."""
+
+    def __init__(self, in_channels, reduction=16):
+        """Initialize WeightBlock with channel attention."""
+        super().__init__()
+        self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc1 = nn.Linear(in_channels, in_channels // reduction, bias=False)
+        self.fc2 = nn.Linear(in_channels // reduction, in_channels, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        """Apply channel attention to input."""
+        b, c, _, _ = x.size()
+        y = self.global_avg_pool(x).view(b, c)
+        y = self.fc1(y)
+        y = self.fc2(y)
+        y = self.sigmoid(y).view(b, c, 1, 1)
+        return x * y
 
 
 class Detect(nn.Module):
@@ -101,7 +125,11 @@ class Detect(nn.Module):
         self.reg_max = reg_max  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
         self.no = nc + self.reg_max * 4  # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
-        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
+        # Fix: when P2 layer is added (nl > 3), ch[0] becomes very small (e.g. 32),
+        # which undesirably compresses c3 for all detection scales.
+        # Use ch[1] (P3 layer) as c3 reference when 4-scale detection is used.
+        c3_ref = ch[0] if self.nl <= 3 else ch[1]
+        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(c3_ref, min(self.nc, 100))  # channels
         self.cv2 = nn.ModuleList(
             nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
         )
@@ -390,6 +418,142 @@ class AdaptiveDetect(Detect):
         x = [self.frm[i](xi) for i, xi in enumerate(x)]
         # 调用父类的forward_head完成标准检测（边框回归 + 分类）
         return super().forward_head(x, box_head, cls_head)
+
+
+class DyBlock(nn.Module):
+    """动态注意力块（Dynamic Attention Block）— DyHead 核心组件。
+
+    实现"双动态"注意力机制：
+    - 空间感知（Spatial-aware）：并行多尺度空洞深度卷积，捕获不同范围的上下文信息
+    - 通道感知（Channel-aware）：SE 通道注意力，自适应增强关键通道特征
+
+    与 AdaptiveDetect 的 FRM 模块相比，DyBlock 具有更强的特征增强能力：
+    1. FRM 使用单一膨胀率的 DWConv，DyBlock 使用三个并行膨胀率 (1,2,3)
+    2. FRM 使用 ECA 通道注意力，DyBlock 使用完整的 SE 注意力（更强的通道建模能力）
+    3. DyBlock 的多尺度空间建模对小目标检测特别有效
+
+    网络结构:
+        输入 → 并行多尺度 DWConv(d=1,2,3) → BN → 1x1 Conv → SiLU
+             → SE 通道注意力 → × 残差 → 输出
+
+    Attributes:
+        dw_convs (nn.ModuleList): 三个并行空洞深度卷积。
+        pw_conv (nn.Conv2d): 1x1 逐点卷积。
+        se (nn.Sequential): SE 通道注意力模块。
+        scale (nn.Parameter): 可学习的残差缩放因子。
+    """
+
+    def __init__(self, c1):
+        """初始化动态注意力块。
+
+        Args:
+            c1 (int): 输入/输出通道数。
+        """
+        super().__init__()
+        # 多尺度空间感知：三个并行空洞深度卷积
+        # 膨胀率 1,2,3 对应感受野 3×3, 5×5, 7×7
+        mid_c = max(c1 // 2, 16)
+        self.dw1 = nn.Conv2d(mid_c, mid_c, 3, padding=1, groups=mid_c, bias=False)
+        self.dw2 = nn.Conv2d(mid_c, mid_c, 3, padding=2, dilation=2, groups=mid_c, bias=False)
+        self.dw3 = nn.Conv2d(mid_c, mid_c, 3, padding=3, dilation=3, groups=mid_c, bias=False)
+        # 通道降维/升维
+        self.pw_reduce = nn.Conv2d(c1, mid_c, 1, bias=False)
+        self.pw_expand = nn.Conv2d(mid_c, c1, 1, bias=False)
+        self.bn = nn.BatchNorm2d(c1)
+        self.act = nn.SiLU()
+        # SE 通道注意力
+        reduction = max(c1 // 4, 16)
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c1, reduction, 1, bias=False),
+            nn.SiLU(),
+            nn.Conv2d(reduction, c1, 1, bias=False),
+            nn.Sigmoid(),
+        )
+        # 可学习的残差缩放（初始化为较小值，渐进增强）
+        self.scale = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, x):
+        """前向传播：多尺度空间特征提取 → 通道注意力 → 残差连接。
+
+        Args:
+            x (torch.Tensor): 输入特征图 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 增强后的特征图 (B, C, H, W)。
+        """
+        residual = x
+        # 降维 → 多尺度空间特征 → 升维
+        x_mid = self.pw_reduce(x)
+        x_spatial = self.dw1(x_mid) + self.dw2(x_mid) + self.dw3(x_mid)
+        x_out = self.act(self.bn(self.pw_expand(x_spatial)))
+        # SE 通道注意力
+        x_out = x_out * self.se(x_out)
+        # 残差连接 + 可学习缩放
+        return residual + x_out * self.scale
+
+
+class DyHeadDetect(Detect):
+    """动态检测头（Dynamic Detection Head）。
+
+    继承标准 Detect 检测头，在每个检测分支前添加 DyBlock 动态注意力块，
+    实现"双动态"特征增强：空间感知 + 通道感知。
+
+    与 AdaptiveDetect (FRM + ECA) 相比的优势:
+    1. 多尺度空间建模：三个并行空洞卷积 (d=1,2,3)，而非单一膨胀率
+    2. 更强的通道注意力：SE (squeeze-excite) 替代 ECA，更充分的通道交互
+    3. 通道降维设计：中间使用 c//2 通道，降低计算开销
+    4. 可学习残差缩放：自适应控制增强强度
+
+    专为遥感船舶小目标检测优化，多尺度空间建模对 P2 层 (160×160) 的
+    小目标特征增强效果显著。
+
+    网络结构:
+        多尺度特征输入 [P2, P3, P4, P5]
+             ↓
+        DyBlock 动态注意力（每个尺度独立处理）
+             ↓
+        标准 Detect 检测（cv2 边框回归 + cv3 分类）
+
+    Examples:
+        >>> detect = DyHeadDetect(nc=1, ch=(64, 128, 256, 512))
+        >>> x = [torch.randn(1, 64, 160, 160), torch.randn(1, 128, 80, 80),
+        ...      torch.randn(1, 256, 40, 40), torch.randn(1, 512, 20, 20)]
+        >>> outputs = detect(x)
+    """
+
+    def __init__(self, nc=80, reg_max=16, end2end=False, ch=()):
+        """初始化动态检测头。
+
+        Args:
+            nc (int): 检测类别数。
+            reg_max (int): DFL 通道数。
+            end2end (bool): 是否使用端到端检测。
+            ch (tuple): 各检测层的输入通道数。
+        """
+        super().__init__(nc, reg_max, end2end, ch)
+        # 为每个检测尺度创建独立的 DyBlock
+        self.dyblocks = nn.ModuleList(DyBlock(c) for c in ch)
+
+    def forward_head(self, x, box_head=None, cls_head=None):
+        """重写前向传播，在检测分支前应用 DyBlock 动态注意力。
+
+        Args:
+            x (list[torch.Tensor]): 多尺度特征图列表 [P2, P3, P4, P5]。
+            box_head: 边框回归分支 (cv2)。
+            cls_head: 分类分支 (cv3)。
+
+        Returns:
+            (dict): 包含 boxes、scores、feats 的预测字典。
+        """
+        # 对每个尺度应用 DyBlock 动态注意力增强
+        x = [self.dyblocks[i](xi) for i, xi in enumerate(x)]
+        return super().forward_head(x, box_head, cls_head)
+
+
+# DualPathDetect is an alias for DyHeadDetect since dual-path fusion is done in YAML
+# via explicit Concat operations that combine backbone raw features with neck refined features
+DualPathDetect = DyHeadDetect
 
 
 class Segment(Detect):

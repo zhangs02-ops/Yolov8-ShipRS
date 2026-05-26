@@ -108,6 +108,13 @@ shape_iou: False # (bool) use Shape-IoU loss instead of CIoU for bbox regression
 sadl: False # (bool) use SADL (Scale-Aware Distribution Loss) for ship small object detection
 sadl_alpha: 0.5 # (float) SADL scale-aware weight coefficient (small target emphasis)
 sadl_beta: 0.3 # (float) SADL shape-aware weight coefficient (aspect ratio penalty)
+box_scale_loss: False # (bool) use Box Scale Loss (CIoU-based, small target penalty reduction)
+scale_factor: 0.5 # (float) small object loss reduction factor in Box Scale Loss
+area_nwd: False # (bool) use Area-Inverse Weighted NWD loss (amplifies small object gradient)
+area_nwd_alpha: 0.75 # (float) area-inverse exponent for Area-NWD loss; larger = stronger emphasis
+area_nwd_max_weight: 5.0 # (float) upper clamp for area weight in Area-NWD loss
+wiou: False # (bool) use Wise-IoU loss with dynamic non-monotonic focusing mechanism
+wiou_delta: 3.0 # (float) WIoUv3 focusing exponent; larger = stronger suppression of low-quality samples
 pose: 12.0 # (float) pose loss gain (pose tasks)
 kobj: 1.0 # (float) keypoint objectness loss gain (pose tasks)
 rle: 1.0 # (float) rle loss gain (pose tasks)

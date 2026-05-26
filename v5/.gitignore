@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Training runs & outputs
+runs/
+*.pt
+*.pth
+
+# Backup files
+*.backup
+*.shiprs_v2_backup
+
+# System files
+.DS_Store
+Thumbs.db
+*:Zone.Identifier

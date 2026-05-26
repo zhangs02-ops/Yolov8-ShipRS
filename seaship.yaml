@@ -1,6 +1,0 @@
-# seaship.yaml
-path: /home/zhangs02/Airbus Ship Detection Yolo format
-train: train/images
-val: val/images
-nc: 1  # 类别数，船舶检测通常是1
-names: ['ship']

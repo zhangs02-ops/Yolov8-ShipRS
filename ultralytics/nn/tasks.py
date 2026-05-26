@@ -13,7 +13,17 @@ import torch.nn as nn
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
     AIFI,
+    ASG,
+    BiFPNConcat,
     BSA,
+    CDGM,
+    DySample,
+    EMA,
+    GSConv,
+    LSK,
+    PConv,
+    SPDConv,
+    BottleneckLite,
     C1,
     C2,
     C2PSA,
@@ -21,6 +31,10 @@ from ultralytics.nn.modules import (
     C2f_CA,
     C2f_DASC,
     C2f_EMA,
+    C2fCBAMv2,
+    C2f_Lite,
+    C2f_PConv,
+    BottleneckPConv,
     C3,
     C3TR,
     DASC,
@@ -40,6 +54,7 @@ from ultralytics.nn.modules import (
     BottleneckBSA,
     BottleneckCSP,
     BottleneckDASC,
+    ChannelAttention,
     C2f,
     C2fAttn,
     C2fCIB,
@@ -55,7 +70,9 @@ from ultralytics.nn.modules import (
     Conv2,
     ConvTranspose,
     Detect,
+    DualPathDetect,
     DWConv,
+    DyHeadDetect,
     DWConvTranspose2d,
     Focus,
     GhostBottleneck,
@@ -1586,6 +1603,7 @@ def parse_model(d, ch, verbose=True):
         {
             Classify,
             Conv,
+            GSConv,
             ConvTranspose,
             GhostConv,
             Bottleneck,
@@ -1606,6 +1624,11 @@ def parse_model(d, ch, verbose=True):
             C2f_CA,
             C2f_DASC,
             C2f_EMA,
+            C2fCBAMv2,
+            C2f_Lite,
+            C2f_PConv,
+            C2f_Lite,
+            C2f_PConv,
             C3k2,
             RepNCSPELAN4,
             ELAN1,
@@ -1622,10 +1645,12 @@ def parse_model(d, ch, verbose=True):
             RepC3,
             PSA,
             SCDown,
+            SPDConv,
             C2fCIB,
             A2C2f,
             DASC,
             BSA,
+            EMA,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1638,6 +1663,8 @@ def parse_model(d, ch, verbose=True):
             C2f_CA,
             C2f_DASC,
             C2f_EMA,
+            C2f_Lite,
+            C2f_PConv,
             C3k2,
             C2fAttn,
             C3,
@@ -1700,10 +1727,17 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+        elif m is CDGM:
+            c2 = sum(ch[x] for x in f)
+            args = [ch[f[-1]], *args]  # prepend detail channels
+        elif m is BiFPNConcat:
+            c2 = sum(ch[x] for x in f)
+            args = [len(f), *args]  # prepend num_inputs
         elif m in frozenset(
             {
                 Detect,
                 AdaptiveDetect,
+                DyHeadDetect,
                 WorldDetect,
                 YOLOEDetect,
                 Segment,
@@ -1719,7 +1753,7 @@ def parse_model(d, ch, verbose=True):
             args.extend([reg_max, end2end, [ch[x] for x in f]])
             if m is Segment or m is YOLOESegment or m is Segment26 or m is YOLOESegment26:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
-            if m in {Detect, AdaptiveDetect, YOLOEDetect, Segment, Segment26, YOLOESegment, YOLOESegment26, Pose, Pose26, OBB, OBB26}:
+            if m in {Detect, AdaptiveDetect, DyHeadDetect, YOLOEDetect, Segment, Segment26, YOLOESegment, YOLOESegment26, Pose, Pose26, OBB, OBB26}:
                 m.legacy = legacy
         elif m is v10Detect:
             args.append([ch[x] for x in f])
@@ -1731,7 +1765,11 @@ def parse_model(d, ch, verbose=True):
             c2 = args[0]
             c1 = ch[f]
             args = [c1, c2, *args[1:]]
-        elif m is SOAU:
+        elif m in frozenset({ChannelAttention, LSK, ASG}):
+            c1 = ch[f]
+            c2 = c1
+            args = [c1, *args[1:]]
+        elif m in frozenset({SOAU, DySample}):
             c1 = ch[f]
             c2 = c1
             sf = args[0] if args else 2
@@ -1779,7 +1817,9 @@ def yaml_model_load(path):
     unified_path = re.sub(r"(\d+)([nslmx])(.+)?$", r"\1\3", str(path))  # i.e. yolov8x.yaml -> yolov8.yaml
     yaml_file = check_yaml(unified_path, hard=False) or check_yaml(path)
     d = YAML.load(yaml_file)  # model dict
-    d["scale"] = guess_model_scale(path)
+    original_scale = d.get("scale", "")
+    guessed_scale = guess_model_scale(path)
+    d["scale"] = guessed_scale or original_scale  # 文件名无 scale 时回退到 yaml 中的值
     d["yaml_file"] = str(path)
     return d
 

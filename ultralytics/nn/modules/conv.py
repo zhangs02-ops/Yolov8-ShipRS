@@ -8,13 +8,18 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 __all__ = (
+    "ASG",
     "BSA",
     "CBAM",
+    "CDGM",
     "ChannelAttention",
     "Concat",
     "Conv",
+    "GSConv",
+    "PConv",
     "Conv2",
     "ConvTranspose",
     "CoordAttention",
@@ -27,8 +32,11 @@ __all__ = (
     "GhostConv",
     "Index",
     "LightConv",
+    "LSK",
+    "BiFPNConcat",
     "RepConv",
     "SOAU",
+    "SPDConv",
     "SpatialAttention",
 )
 
@@ -860,7 +868,8 @@ class EMA(nn.Module):
         x22 = x1.reshape(b * self.groups, c // self.groups, -1)
 
         weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
-        return (group_x * weights.sigmoid()).reshape(b, c, h, w)
+        # 残差连接：避免特征衰减，保留原始信息
+        return (group_x * weights.sigmoid()).reshape(b, c, h, w) + x
 
 
 class DASC(nn.Module):
@@ -925,21 +934,26 @@ class DASC(nn.Module):
 
 
 class BSA(nn.Module):
-    """背景抑制注意力（Background-Suppressed Attention）。
+    """Background-Suppressed Attention v2.
 
     针对遥感海面背景均匀但存在波浪、云影等干扰的问题设计。
     通用注意力机制（如SE、CA）对所有区域一视同仁地"增强"，
     但海面背景本身特征均匀，不需要增强，反而应该抑制。
 
     本模块利用船舶（高频突变）与海面背景（低频平滑）的频率差异，
-    通过低频分支估计背景强度，生成背景权重图，然后对原始特征
-    进行背景抑制，保留船舶等高频前景特征。
+    通过低频分支估计背景强度，生成背景门控图，然后对高频前景特征
+    进行门控加权，以标准残差形式增强原始特征。
+
+    改进点（v2）：
+        1. 增加SiLU激活和BN，稳定特征分布
+        2. 去掉固定的residual_weight=0.1，改为标准残差x + ...
+        3. 让网络自己学习门控强度，避免训练早期信息丢失
 
     设计思路:
-        低频分支(5×5 DWConv) → 捕获平滑背景区域
-        高频分支(3×3 DWConv) → 捕获边缘和细节
-        背景权重 = Sigmoid(低频) → 值越大表示背景越强
-        输出 = 高频 × (1 - 背景权重) + 残差
+        低频分支(5×5 DWConv + SiLU + BN) → 估计背景强度
+        高频分支(3×3 DWConv + SiLU + BN) → 提取边缘细节
+        背景门控 = Sigmoid(低频) → 值越大表示背景越强，门控越小
+        输出 = x + 高频 × (1 - 背景门控)  → 标准残差注意力
 
     参数量: 极小（两个深度可分离卷积）
     物理意义: 明确利用船舶与海面的频率差异
@@ -957,18 +971,20 @@ class BSA(nn.Module):
         self.low_freq = nn.Sequential(
             nn.Conv2d(c1, mid_c, 5, padding=2, groups=mid_c, bias=False),
             nn.BatchNorm2d(mid_c),
+            nn.SiLU(),
             nn.Conv2d(mid_c, c1, 1, bias=False),
-            nn.Sigmoid(),
+            nn.BatchNorm2d(c1),
         )
         self.high_freq = nn.Sequential(
             nn.Conv2d(c1, mid_c, 3, padding=1, groups=mid_c, bias=False),
             nn.BatchNorm2d(mid_c),
+            nn.SiLU(),
             nn.Conv2d(mid_c, c1, 1, bias=False),
+            nn.BatchNorm2d(c1),
         )
-        self.residual_weight = 0.1
 
     def forward(self, x):
-        """前向传播：高低频分离 → 背景估计 → 背景抑制。
+        """前向传播：高低频分离 → 背景估计 → 门控残差增强。
 
         Args:
             x (torch.Tensor): 输入特征图 (B, C, H, W)。
@@ -976,9 +992,68 @@ class BSA(nn.Module):
         Returns:
             (torch.Tensor): 背景抑制后的特征图 (B, C, H, W)。
         """
-        bg_weight = self.low_freq(x)
-        fg_feat = self.high_freq(x)
-        return fg_feat * (1 - bg_weight) + x * self.residual_weight
+        bg = self.low_freq(x)
+        fg = self.high_freq(x)
+        bg_gate = torch.sigmoid(bg)
+        # 标准残差注意力：保留原始特征，门控调节增强量
+        return x + fg * (1 - bg_gate)
+
+
+class SPDConv(nn.Module):
+    """Space-to-Depth Convolution (SPD-Conv)。
+
+    替代传统 stride=2 下采样，避免小目标特征在下采样时丢失。
+    将空间维度(H,W)上的 2×2 区域重排到通道维度，实现无信息损失的下采样。
+
+    原理:
+        输入 [B, C, H, W]
+        Space-to-Depth: [B, 4C, H/2, W/2]
+        1×1/Conv 降维: [B, C_out, H/2, W/2]
+
+    References:
+        https://arxiv.org/abs/2208.03641
+    """
+
+    def __init__(self, c1, c2, k=3, s=1):
+        super().__init__()
+        self.conv = Conv(c1 * 4, c2, k, s)
+
+    def forward(self, x):
+        """Space-to-Depth + Conv。"""
+        x = torch.cat([x[..., ::2, ::2], x[..., 1::2, ::2],
+                       x[..., ::2, 1::2], x[..., 1::2, 1::2]], 1)
+        return self.conv(x)
+
+
+class LSK(nn.Module):
+    """Large Selective Kernel (LSK) 注意力模块。
+
+    并行使用局部小核(5×5)和大感受野空洞核(7×7,d=3)，
+    通过自适应加权让网络根据目标大小自动选择感受野。
+    对细长小目标（如船舶）特别有效。
+
+    References:
+        https://arxiv.org/abs/2303.09030 (LSKNet)
+    """
+
+    def __init__(self, c):
+        super().__init__()
+        # 局部精细分支
+        self.local = nn.Sequential(
+            nn.Conv2d(c, c, 5, padding=2, groups=c, bias=False),
+            nn.BatchNorm2d(c), nn.SiLU())
+        # 全局上下文分支（大核空洞卷积）
+        self.global_ = nn.Sequential(
+            nn.Conv2d(c, c, 7, padding=9, groups=c, dilation=3, bias=False),
+            nn.BatchNorm2d(c), nn.SiLU())
+        # 自适应选择器
+        self.conv = nn.Conv2d(c, 2, 1)
+
+    def forward(self, x):
+        f_local = self.local(x)
+        f_global = self.global_(x)
+        w = self.conv(x).sigmoid()  # [B,2,H,W]
+        return x + f_local * w[:, 0:1] + f_global * w[:, 1:2]
 
 
 class SOAU(nn.Module):
@@ -1031,3 +1106,256 @@ class SOAU(nn.Module):
         x_up = F.interpolate(x, scale_factor=self.scale_factor, mode="nearest")
         x_refined = self.refine_conv(x_up)
         return x_up + 0.1 * x_refined
+
+
+class BiFPNConcat(nn.Module):
+    """BiFPN 加权特征融合 — 快速归一化加权 Concat (Bidirectional Feature Pyramid Network)。
+
+    在标准 Concat 的基础上，为每个输入分支添加可学习的缩放权重，
+    通过快速归一化（Fast Normalized Fusion）实现自适应加权融合。
+
+    标准 Concat 对所有输入一视同仁地拼接，BiFPNConcat 则让模型学习
+    不同来源特征的最优融合比例。对于遥感船舶检测，FPN/PAN 中不同尺度
+    的特征重要性差异显著（小目标主要依赖高分辨率特征），加权融合能
+    自适应地强调更重要的特征来源。
+
+    设计思路:
+        1. 为每个输入分支分配可学习标量权重 w_i (初始化为1)
+        2. 快速归一化: output = Concat(w_i * x_i / (sum(w_j) + eps))
+        3. 使用 ReLU 确保权重非负
+        4. 相比 Softmax 归一化，快速归一化更高效且收敛更稳定
+
+    References:
+        EfficientDet: Scalable and Efficient Object Detection (Tan et al., 2020)
+        https://arxiv.org/abs/1911.09070
+    """
+
+    def __init__(self, num_inputs, dim=1):
+        """初始化 BiFPN 加权融合模块。
+
+        Args:
+            num_inputs (int): 输入分支数量（对应 YAML 中 from 字段的元素个数）。
+            dim (int): 拼接维度，默认1（通道维度）。
+        """
+        super().__init__()
+        self.dim = dim
+        self.num_inputs = num_inputs
+        # 可学习的逐输入融合权重，初始化为1（等权重，退化为标准Concat）
+        self.weights = nn.Parameter(torch.ones(num_inputs))
+
+    def forward(self, x):
+        """前向传播：快速归一化加权拼接。
+
+        Args:
+            x (list[torch.Tensor]): 来自不同层的特征图列表。
+
+        Returns:
+            (torch.Tensor): 加权拼接后的特征图，通道数 = sum(各输入通道数)。
+        """
+        # ReLU 确保权重非负，eps 保证数值稳定
+        w = F.relu(self.weights)
+        w_sum = w.sum() + 1e-4
+        # 加权后拼接，保持与标准Concat相同的输出形状
+        scaled = [w[i] / w_sum * xi for i, xi in enumerate(x)]
+        return torch.cat(scaled, self.dim)
+
+
+class DySample(nn.Module):
+    """Dynamic Sampling Upsampling (Simplified Version).
+
+    Learns dynamic sampling offsets for content-aware upsampling.
+    Much lighter than SOAU (~16K params for 3 layers vs 6.2M).
+
+    Reference: Learning to Upsample by Learning to Sample, CVPR 2023.
+    """
+
+    def __init__(self, c1, scale=2):
+        """Initialize DySample module.
+
+        Args:
+            c1 (int): Input channels (also output channels).
+            scale (int): Upsampling scale factor, default 2.
+        """
+        super().__init__()
+        self.scale = scale
+        # Predict 2D normalized offsets [-1, 1]
+        self.offset_conv = nn.Conv2d(c1, 2, 3, padding=1, bias=False)
+
+    def forward(self, x):
+        """Forward: predict offsets -> upsample offsets -> dynamic grid_sample.
+
+        Args:
+            x (torch.Tensor): Input feature (B, C, H, W).
+
+        Returns:
+            (torch.Tensor): Upsampled feature (B, C, H*scale, W*scale).
+        """
+        B, C, H, W = x.shape
+        # Predict offsets and normalize to [-1, 1]
+        offset = torch.tanh(self.offset_conv(x))
+        # Upsample offsets to target resolution
+        offset = F.interpolate(offset, scale_factor=self.scale, mode="bilinear", align_corners=False)
+        offset = offset.permute(0, 2, 3, 1)  # [B, H*s, W*s, 2]
+
+        # Base grid for upsampled resolution in [-1, 1]
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1, 1, H * self.scale, device=x.device, dtype=x.dtype),
+            torch.linspace(-1, 1, W * self.scale, device=x.device, dtype=x.dtype),
+            indexing="ij",
+        )
+        grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0).expand(B, -1, -1, -1)
+
+        # Dynamic sampling with learned offsets
+        return F.grid_sample(x, grid + offset, mode="bilinear", padding_mode="border", align_corners=False)
+
+
+class CDGM(nn.Module):
+    """Cross-Scale Detail Guidance Module v2 (跨尺度细节引导融合).
+
+    在FPN特征融合中，用高分辨率Backbone特征(detail)引导低分辨率上采样特征(coarse)的调制，
+    替代标准Concat实现更精细的跨尺度融合。
+
+    v2改进 (相比v1):
+        v1: detail.mean(dim=1) → 无参数，全通道平均丢失语义信息
+        v2: learnable gate_proj(detail) → 可学习门控，保留通道语义
+
+    设计思路:
+        1. detail特征 → 1×1降维 → SiLU → 1×1投影 → σ → [B,1,H,W] 空间门控
+        2. coarse特征 = coarse × (1 + 门控) — 细节引导的调制增强
+        3. Concat(modulated_coarse, detail) — 保持与标准Concat相同的输出格式
+
+    参数量: c_detail × (c_detail//4 + 1) 个参数
+    使用方式: 在YAML中替换FPN路径的Concat: [[-1, N], 1, CDGM, []]
+    """
+
+    def __init__(self, c_detail):
+        """初始化CDGM模块。
+
+        Args:
+            c_detail (int): detail特征图的通道数（来自Backbone的高分辨率分支）。
+        """
+        super().__init__()
+        hidden = max(8, c_detail // 4)
+        self.gate_proj = nn.Sequential(
+            nn.Conv2d(c_detail, hidden, 1, bias=False),
+            nn.SiLU(),
+            nn.Conv2d(hidden, 1, 1, bias=False),
+        )
+
+    def forward(self, x):
+        """前向传播：可学习细节引导调制 → 拼接。
+
+        Args:
+            x (list[torch.Tensor]): [coarse, detail]，两个尺度的特征图。
+
+        Returns:
+            (torch.Tensor): 调制后拼接的特征图 (通道数 = coarse_c + detail_c)。
+        """
+        coarse, detail = x
+        # 可学习门控: 从detail中学习每个位置的空间置信度
+        gate = self.gate_proj(detail).sigmoid()
+        # 如果coarse和detail空间尺寸不同，对齐coarse到detail的分辨率
+        if coarse.shape[-2:] != detail.shape[-2:]:
+            coarse = F.interpolate(
+                coarse, size=detail.shape[-2:], mode="bilinear", align_corners=False
+            )
+        # 细节引导调制: coarse特征在detail高响应区域被增强
+        coarse_mod = coarse * (1 + gate)
+        return torch.cat([coarse_mod, detail], 1)
+
+
+class PConv(nn.Module):
+    """部分卷积 — 只处理 1/4 通道，其余直通，参数降约 40%。
+
+    References:
+        FasterNet, CVPR 2023
+    """
+
+    def __init__(self, dim, n_div=4):
+        super().__init__()
+        self.dim_conv = dim // n_div
+        self.dim_untouched = dim - self.dim_conv
+        self.conv = nn.Conv2d(self.dim_conv, self.dim_conv, 3, 1, 1, groups=self.dim_conv, bias=False)
+        self.bn = nn.BatchNorm2d(self.dim_conv)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        x1, x2 = x.split([self.dim_conv, self.dim_untouched], dim=1)
+        x1 = self.act(self.bn(self.conv(x1)))
+        return torch.cat([x1, x2], dim=1)
+
+
+class GSConv(nn.Module):
+    """鬼影混洗卷积 — 1/2通道做标准Conv + 1/2做DWConv → Concat + Shuffle。
+
+    标准 Conv(C, C_out, 3) → 参数量 = C × C_out × 9
+    GSConv(C, C_out, 3)   → 参数量 ≈ C × C_out×0.5 + C_out×0.5×9 ≈ 50%
+    同时通过 Channel Shuffle 保证多分支信息流通。
+
+    References:
+        SlimNeck / GSConv (YOLOv5轻量化常用)
+    """
+
+    def __init__(self, c1, c2, k=1, s=1, g=1, act=True):
+        super().__init__()
+        c_ = c2 // 2
+        self.conv = Conv(c1, c_, k, s, g=g, act=act)
+        self.dwconv = DWConv(c_, c_, k=5, s=1, act=act)  # 下采样由 conv 负责, dwconv s=1
+
+    def forward(self, x):
+        x1 = self.conv(x)
+        x2 = self.dwconv(x1)
+        # channel shuffle: 将两分支交错排列
+        x = torch.cat([x1, x2], 1)
+        b, c, h, w = x.shape
+        x = x.view(b, 2, c // 2, h, w).transpose(1, 2).contiguous().view(b, c, h, w)
+        return x
+
+
+class ASG(nn.Module):
+    """Adaptive Scale Gate (自适应尺度门控).
+
+    在检测头前对每个尺度的特征图进行逐位置自适应门控。
+    让网络为每个空间位置评估"当前尺度的特征是否可靠"，
+    从而抑制噪声响应、增强可靠检测。
+
+    设计思路:
+        1. 深度可分离3×3 Conv → 提取局部结构信息
+        2. BN + SiLU → 特征稳定
+        3. 1×1 Conv → 降到1通道 → σ → [B,1,H,W] 置信度图
+        4. 输出 = 输入 × 置信度 — 自适应门控
+
+    物理意义:
+        - P2层中"像船的区域" → 置信度高 → 增强
+        - P2层中"大船的局部碎片" → 置信度低 → 抑制
+        - 网络自己学会为每个位置选择合适的检测尺度
+
+    参数量: ~c×9 + c×1 (DWConv + Pointwise)，约(10×c)个参数
+    使用方式: 在YAML中放在检测头前: [-1, 1, ASG, []]
+    """
+
+    def __init__(self, c1):
+        """初始化ASG模块。
+
+        Args:
+            c1 (int): 输入/输出通道数。
+        """
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Conv2d(c1, c1, 3, padding=1, groups=c1, bias=False),
+            nn.BatchNorm2d(c1),
+            nn.SiLU(),
+            nn.Conv2d(c1, 1, 1, bias=False),
+        )
+
+    def forward(self, x):
+        """前向传播：逐位置门控生成 → 自适应特征调节。
+
+        Args:
+            x (torch.Tensor): 输入特征图 (B, C, H, W)。
+
+        Returns:
+            (torch.Tensor): 门控后的特征图 (B, C, H, W)。
+        """
+        weight = self.gate(x).sigmoid()
+        return x * weight

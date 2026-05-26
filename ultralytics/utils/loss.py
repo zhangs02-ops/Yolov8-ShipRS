@@ -14,7 +14,7 @@ from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import autocast
 
-from .metrics import bbox_iou, bbox_nwd, bbox_sadl, bbox_shape_iou, probiou
+from .metrics import bbox_area_nwd, bbox_iou, bbox_nwd, bbox_sadl, bbox_shape_iou, bbox_wiou, probiou
 from .tal import bbox2dist, rbox2dist
 
 
@@ -118,6 +118,13 @@ class BboxLoss(nn.Module):
         use_sadl: bool = False,
         sadl_alpha: float = 0.5,
         sadl_beta: float = 0.3,
+        use_box_scale_loss: bool = False,
+        scale_factor: float = 0.5,
+        use_area_nwd: bool = False,
+        area_nwd_alpha: float = 0.75,
+        area_nwd_max_weight: float = 5.0,
+        use_wiou: bool = False,
+        wiou_delta: float = 3.0,
     ):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
@@ -128,6 +135,15 @@ class BboxLoss(nn.Module):
         self.use_sadl = use_sadl
         self.sadl_alpha = sadl_alpha
         self.sadl_beta = sadl_beta
+        self.use_box_scale_loss = use_box_scale_loss
+        self.scale_factor = scale_factor
+        self.use_area_nwd = use_area_nwd
+        self.area_nwd_alpha = area_nwd_alpha
+        self.area_nwd_max_weight = area_nwd_max_weight
+        self.use_wiou = use_wiou
+        self.wiou_delta = wiou_delta
+        # EMA 跟踪的 IoU 均值，用于 WIoUv3 动态非单调聚焦
+        self.register_buffer("wiou_mean_ema", torch.tensor(0.0))
 
     def forward(
         self,
@@ -143,7 +159,33 @@ class BboxLoss(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU (or NWD/Shape-IoU) and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        if self.use_sadl:
+        if self.use_wiou:
+            # WIoUv3: 尺度自适应距离惩罚 + 动态非单调聚焦
+            wiou, iou = bbox_wiou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False)
+            # 用 EMA 跟踪 IoU 均值（论文用 mean 而非 max）
+            with torch.no_grad():
+                batch_iou_mean = iou.mean()
+                self.wiou_mean_ema = 0.9 * self.wiou_mean_ema + 0.1 * batch_iou_mean
+                # 冷启动保护: EMA 从 0 开始会导致 focusing 爆炸
+                # 取 max(EMA, batch_mean) 确保 denominator 不小于当前 batch 均值
+                iou_ref = torch.max(self.wiou_mean_ema, batch_iou_mean).clamp(min=1e-7)
+            # 动态非单调聚焦: (IoU / IoU_ref)^delta
+            focusing = (iou.detach() / iou_ref).pow(self.wiou_delta).clamp(max=5.0)
+            loss_iou = (focusing * (1.0 - wiou) * weight).sum() / target_scores_sum
+        elif self.use_area_nwd:
+            nwd_val = bbox_nwd(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, C=self.nwd_c)
+            base_loss = 1.0 - nwd_val
+            gt_w = target_bboxes[fg_mask][..., 2] - target_bboxes[fg_mask][..., 0]
+            gt_h = target_bboxes[fg_mask][..., 3] - target_bboxes[fg_mask][..., 1]
+            gt_area = gt_w * gt_h
+            median_area = gt_area.median().clamp(min=1e-7)
+            area_w = (median_area / (gt_area + 1e-7)).pow(self.area_nwd_alpha).clamp(1.0, self.area_nwd_max_weight)
+            raw_loss = base_loss * area_w.unsqueeze(-1)
+            loss_iou = (raw_loss * weight).sum() / target_scores_sum
+        elif self.use_box_scale_loss:
+            loss_iou = (bbox_scale_loss(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False,
+                                         scale_factor=self.scale_factor) * weight).sum() / target_scores_sum
+        elif self.use_sadl:
             loss_iou = (bbox_sadl(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False,
                                   alpha=self.sadl_alpha, beta=self.sadl_beta) * weight).sum() / target_scores_sum
         elif self.use_nwd:
@@ -380,6 +422,13 @@ class v8DetectionLoss:
         use_sadl = getattr(h, "sadl", False)
         sadl_alpha = getattr(h, "sadl_alpha", 0.5)
         sadl_beta = getattr(h, "sadl_beta", 0.3)
+        use_box_scale_loss = getattr(h, "box_scale_loss", False)
+        scale_factor = getattr(h, "scale_factor", 0.5)
+        use_area_nwd = getattr(h, "area_nwd", False)
+        area_nwd_alpha = getattr(h, "area_nwd_alpha", 0.75)
+        area_nwd_max_weight = getattr(h, "area_nwd_max_weight", 5.0)
+        use_wiou = getattr(h, "wiou", False)
+        wiou_delta = getattr(h, "wiou_delta", 3.0)
 
         self.assigner = TaskAlignedAssigner(
             topk=tal_topk,
@@ -388,15 +437,20 @@ class v8DetectionLoss:
             beta=6.0,
             stride=self.stride.tolist(),
             topk2=tal_topk2,
-            use_nwd=use_nwd,
+            use_nwd=False,
             nwd_c=nwd_c,
-            use_sadl=use_sadl,
+            use_sadl=False,
             sadl_alpha=sadl_alpha,
             sadl_beta=sadl_beta,
         )
         self.bbox_loss = BboxLoss(
-            m.reg_max, use_nwd=use_nwd, nwd_c=nwd_c, use_shape_iou=use_shape_iou,
+            m.reg_max, use_nwd=False, nwd_c=nwd_c, use_shape_iou=use_shape_iou,
             use_sadl=use_sadl, sadl_alpha=sadl_alpha, sadl_beta=sadl_beta,
+            use_box_scale_loss=use_box_scale_loss, scale_factor=scale_factor,
+            use_area_nwd=use_area_nwd, area_nwd_alpha=area_nwd_alpha,
+            area_nwd_max_weight=area_nwd_max_weight,
+            use_wiou=use_wiou,
+            wiou_delta=wiou_delta,
         ).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 

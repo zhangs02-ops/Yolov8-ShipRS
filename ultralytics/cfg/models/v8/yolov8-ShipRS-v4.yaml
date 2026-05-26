@@ -1,0 +1,61 @@
+# YOLOv8 ShipRS-v4 模型配置
+
+# 基础配置
+nc: 1  # 船舶 1 类
+scales:
+  # [depth, width, height, channels]
+  [[10, 1.0, 1.0, 256],  # 0 P3/8
+   [20, 1.0, 1.0, 512],  # 1 P4/16
+   [40, 1.0, 1.0, 768],  # 2 P5/32
+   [80, 1.0, 1.0, 1024]] # 3 P6/64
+
+# 模型结构
+backbone:
+  # [from, number, module, args]
+  [[-1, 1, Conv, [64, 6, 2, 2]],  # 0-P1/2
+   [-1, 1, Conv, [128, 3, 2]],     # 1-P2/4
+   [-1, 3, C2f, [128, True]],      # 2
+   [-1, 1, Conv, [256, 3, 2]],     # 3-P3/8
+   [-1, 6, C2f, [256, True]],      # 4
+   [-1, 1, Conv, [512, 3, 2]],     # 5-P4/16
+   [-1, 9, C2f, [512, True]],      # 6
+   [-1, 1, Conv, [1024, 3, 2]],    # 7-P5/32
+   [-1, 3, C2f, [1024, True]],     # 8
+   [-1, 1, SPPF, [1024, 5]],       # 9
+   [-1, 1, Conv, [512, 1, 1]],     # 10
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],  # 11
+   [[-1, 6], 1, Concat, [1]],      # 12 cat backbone P4
+   [-1, 3, C2f, [512]],            # 13
+   [-1, 1, Conv, [256, 1, 1]],     # 14
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],  # 15
+   [[-1, 4], 1, Concat, [1]],      # 16 cat backbone P3
+   [-1, 3, C2f, [256]],            # 17 (P3/8-small)
+   [-1, 1, Conv, [256, 3, 2]],     # 18
+   [[-1, 13], 1, Concat, [1]],     # 19 cat head P4
+   [-1, 3, C2f, [512]],            # 20 (P4/16-medium)
+   [-1, 1, Conv, [512, 3, 2]],     # 21
+   [[-1, 8], 1, Concat, [1]],      # 22 cat head P5
+   [-1, 3, C2f, [1024]],           # 23 (P5/32-large)
+   [[17, 20, 23], 1, Detect, [nc]]]  # Detect(P3, P4, P5)
+
+# 注意：这里使用 Detect 层，实际训练时会替换为 Head
+# 训练时会自动添加 DASC、BSA、SOAU 模块
+
+# 训练参数
+box_scale_loss: true    # 启用 Box Scale Loss
+scale_factor: 0.5       # 小目标损失降低因子
+sadl: false             # 可选：禁用 SADL
+nwd: false              # 可选：禁用 NWD
+shape_iou: false        # 可选：禁用 Shape-IoU
+
+# 模型说明：
+# 1. DASC：方向感知条形卷积，针对船舶细长形态
+# 2. BSA：背景抑制注意力，针对海面背景干扰
+# 3. SOAU：小目标感知上采样，针对小目标特征稀释
+# 4. Box Scale Loss：基于CIoU的小目标损失优化
+#
+# 消融实验：
+# - 仅 DASC：修改 C2f 为 C2f_DASC
+# - 仅 BSA：修改 C2f 为 C2f_BSA
+# - 仅 SOAU：修改上采样为 SOAU
+# - 仅 Box Scale Loss：禁用其他损失

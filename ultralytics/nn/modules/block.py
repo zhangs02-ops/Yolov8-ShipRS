@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import BSA, Conv, CoordAttention, DASC, DWConv, EMA, GhostConv, LightConv, RepConv, SOAU, autopad
+from .conv import BSA, CBAM, ChannelAttention, Conv, CoordAttention, DASC, DWConv, EMA, GhostConv, LightConv, PConv, RepConv, SOAU, SpatialAttention, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -21,6 +21,13 @@ __all__ = (
     "C2f_CA",
     "C2f_DASC",
     "C2f_EMA",
+    "C2fCBAMv2",
+    "C2f_Lite",
+    "C2f_PConv",
+    "ChannelAttention",
+    "SpatialAttention",
+    "BottleneckLite",
+    "BottleneckPConv",
     "C3",
     "C3TR",
     "CIB",
@@ -2435,3 +2442,77 @@ class C2f_BSA(C2f):
             BottleneckBSA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
         )
 
+
+class BottleneckLite(Bottleneck):
+    """轻量化瓶颈模块: RepVGG(训练多分支→推理融合) + PConv(仅处理1/4通道)."""
+
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        super().__init__(c1, c2, shortcut, g, k, e)
+        c_ = int(c2 * e)
+        k1 = k[0] if isinstance(k[0], int) else k[0][0]  # 提取整数kernel size
+        self.cv1 = RepConv(c1, c_, k1, 1)                  # 结构重参数化
+        self.cv2 = PConv(c2) if g == 1 else Conv(c_, c2, k[1] if isinstance(k[1], int) else k[1][0], 1, g=g)
+        self.add = shortcut and c1 == c2
+
+
+class C2f_Lite(C2f):
+    """轻量化C2f模块: 将内部Bottleneck替换为BottleneckLite.
+
+    BottleneckLite 同时使用 RepVGG 重参数化和 PConv 部分卷积，
+    推理时融合为单卷积，在几乎不损失精度的情况下大幅降低计算量。
+
+    使用方式:
+      在YAML中替换 C2f → C2f_Lite 即可。
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
+        self.m = nn.ModuleList(
+            BottleneckLite(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
+
+
+class BottleneckPConv(Bottleneck):
+    """第二个 3×3 Conv 替换为 PConv，参数量降约 30%."""
+
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        super().__init__(c1, c2, shortcut, g, k, e)
+        c_ = int(c2 * e)
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        self.cv2 = PConv(c2) if g == 1 else Conv(c_, c2, k[1] if isinstance(k[1], int) else k[1][0], 1, g=g)
+        self.add = shortcut and c1 == c2
+
+
+class C2f_PConv(C2f):
+    """C2f 中 Bottleneck 的第二个 Conv 替换为 PConv，轻量高效."""
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
+        self.m = nn.ModuleList(
+            BottleneckPConv(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
+
+
+
+class C2fCBAMv2(nn.Module):
+    """C2f with CBAM attention applied after the final convolution."""
+
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__()
+        self.c = int(c2 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        self.m = nn.ModuleList(
+            Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
+        )
+        self.cbam = CBAM(c2)
+
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cbam(self.cv2(torch.cat(y, 1)))
+
+    def forward_split(self, x):
+        y = list(self.cv1(x).split((self.c, self.c), 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cbam(self.cv2(torch.cat(y, 1)))

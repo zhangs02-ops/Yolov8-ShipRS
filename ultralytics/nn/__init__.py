@@ -1,5 +1,6 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+from .modules.block import Attention
 from .tasks import (
     BaseModel,
     ClassificationModel,

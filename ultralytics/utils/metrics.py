@@ -85,6 +85,7 @@ def bbox_iou(
     GIoU: bool = False,
     DIoU: bool = False,
     CIoU: bool = False,
+    SIoU: bool = False,
     eps: float = 1e-7,
 ) -> torch.Tensor:
     """Calculate the Intersection over Union (IoU) between bounding boxes.
@@ -101,10 +102,11 @@ def bbox_iou(
         GIoU (bool, optional): If True, calculate Generalized IoU.
         DIoU (bool, optional): If True, calculate Distance IoU.
         CIoU (bool, optional): If True, calculate Complete IoU.
+        SIoU (bool, optional): If True, calculate Scylla IoU.
         eps (float, optional): A small value to avoid division by zero.
 
     Returns:
-        (torch.Tensor): IoU, GIoU, DIoU, or CIoU values depending on the specified flags.
+        (torch.Tensor): IoU, GIoU, DIoU, CIoU, or SIoU values depending on the specified flags.
     """
     # Get the coordinates of bounding boxes
     if xywh:  # transform from xywh to xyxy
@@ -128,14 +130,28 @@ def bbox_iou(
 
     # IoU
     iou = inter / union
-    if CIoU or DIoU or GIoU:
+    if CIoU or DIoU or GIoU or SIoU:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+        if CIoU or DIoU or SIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
             c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
             rho2 = (
                 (b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)
             ) / 4  # center dist**2
+            if SIoU:  # Scylla IoU https://arxiv.org/abs/2205.12740
+                sigma = torch.pow(rho2, 0.5)
+                sin_alpha = torch.abs(b2_y1 + b2_y2 - b1_y1 - b1_y2) / (2 * sigma + eps)
+                sin_beta = torch.abs(b2_x1 + b2_x2 - b1_x1 - b1_x2) / (2 * sigma + eps)
+                sin_alpha = torch.where(sin_alpha <= math.sin(math.pi / 4), sin_alpha, sin_beta)
+                angle_cost = torch.cos(2 * torch.asin(sin_alpha) - math.pi / 2)
+                gamma = 2 - angle_cost
+                distance_cost = gamma * rho2 / c2
+                omiga_w = torch.abs(w1 - w2) / torch.maximum(w1, w2 + eps)
+                omiga_h = torch.abs(h1 - h2) / torch.maximum(h1, h2 + eps)
+                shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(
+                    1 - torch.exp(-1 * omiga_h), 4
+                )
+                return iou - (distance_cost + shape_cost) / 2  # SIoU
             if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
                 v = (4 / math.pi**2) * ((w2 / h2).atan() - (w1 / h1).atan()).pow(2)
                 with torch.no_grad():
@@ -145,6 +161,74 @@ def bbox_iou(
         c_area = cw * ch + eps  # convex area
         return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
     return iou  # IoU
+
+
+def bbox_wiou(
+    box1: torch.Tensor,
+    box2: torch.Tensor,
+    xywh: bool = True,
+    eps: float = 1e-7,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Calculate Wise-IoU (WIoU) with distance-penalized metric.
+
+    WIoU metric: IoU adjusted by center distance normalized by GT box size.
+    The focusing weight (for WIoUv3) is computed separately in BboxLoss
+    using EMA-tracked IoU_max and configurable delta parameter.
+
+    Formula:
+        WIoU = IoU - (rho²/c²) × exp(-r)
+        where r = rho² / diag²(GT)  (scale-aware normalization)
+
+    Args:
+        box1 (torch.Tensor): Predicted bounding boxes, last dim 4.
+        box2 (torch.Tensor): Ground truth bounding boxes, last dim 4.
+        xywh (bool): Input format. True=xywh, False=xyxy.
+        eps (float): Small value to prevent division by zero.
+
+    Returns:
+        wiou (torch.Tensor): Wise-IoU values, shape (N, 1).
+        iou (torch.Tensor): Standard IoU values, shape (N, 1) — used for focusing weight.
+
+    References:
+        Wise-IoU: Bounding Box Regression Loss with Dynamic Focusing Mechanism
+        https://arxiv.org/abs/2301.10051
+    """
+    if xywh:
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, -1), box2.chunk(4, -1)
+        b1_x1, b1_x2 = x1 - w1 / 2, x1 + w1 / 2
+        b1_y1, b1_y2 = y1 - h1 / 2, y1 + h1 / 2
+        b2_x1, b2_x2 = x2 - w2 / 2, x2 + w2 / 2
+        b2_y1, b2_y2 = y2 - h2 / 2, y2 + h2 / 2
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+
+    # IoU
+    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp_(0) * (
+        b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)
+    ).clamp_(0)
+    union = w1 * h1 + w2 * h2 - inter + eps
+    iou = inter / union
+
+    # Convex enclosing box (smallest box containing both)
+    cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)
+    ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)
+
+    # Center distance squared, normalized by convex diagonal
+    c2 = cw.pow(2) + ch.pow(2) + eps
+    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) +
+            (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
+
+    # Wise-IoU: scale-aware distance penalty
+    # r = rho2/gt_diag2 normalizes center distance by GT box diagonal
+    # exp(-r) provides scale-adaptive penalty: large GT → full penalty, small GT → reduced penalty
+    gt_diag2 = w2.pow(2) + h2.pow(2) + eps
+    r = rho2 / gt_diag2
+    wiou = iou - rho2 / c2 * torch.exp(-r)
+
+    return wiou.unsqueeze(-1), iou.unsqueeze(-1)
 
 
 def bbox_nwd(
@@ -192,6 +276,89 @@ def bbox_nwd(
     return torch.exp(-(w2_dist + eps).sqrt() / C)
 
 
+def bbox_area_nwd(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    xywh: bool = True,
+    C: float = 2.0,
+    alpha: float = 0.75,
+    max_weight: float = 5.0,
+    stride: torch.Tensor | None = None,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """Area-Inverse Weighted NWD Loss for small object detection.
+
+    L = (1 - NWD) × clamp((A_median / A_obj)^alpha, 1.0, max_weight)
+    """
+    nwd = bbox_nwd(pred, target, xywh=xywh, C=C, eps=eps)
+    base_loss = 1.0 - nwd
+
+    if xywh:
+        gt_w, gt_h = target[..., 2], target[..., 3]
+    else:
+        gt_w = target[..., 2] - target[..., 0]
+        gt_h = target[..., 3] - target[..., 1]
+    gt_area = gt_w * gt_h
+
+    median_area = gt_area.median().clamp(min=eps)
+    area_weight = (median_area / (gt_area + eps)).pow(alpha)
+    area_weight = area_weight.clamp(1.0, max_weight)
+
+    return (base_loss * area_weight).unsqueeze(-1)
+
+
+def bbox_scale_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    xywh: bool = True,
+    scale_factor: float = 0.5,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """Box Scale Loss (简化版 CIoU，对小目标降低惩罚).
+
+    基于标准 CIoU，但根据目标面积调整损失：
+    - 小目标：降低惩罚（scale_factor * CIoU_loss）
+    - 大目标：使用标准 CIoU 惩罚
+
+    这是一个极其简单的设计，避免了 NWD 的复杂性和兼容性问题。
+
+    Args:
+        pred (torch.Tensor): 预测框，形状 (N, 4)。
+        target (torch.Tensor): 真实框，形状 (N, 4)。
+        xywh (bool): 输入格式是否为 (cx, cy, w, h)。
+        scale_factor (float): 小目标降低惩罚的程度，默认 0.5。
+        eps (float): 防止除零的小值。
+
+    Returns:
+        (torch.Tensor): Scale-aware CIoU 损失值，形状 (N, 1)。
+    """
+    # 1. 基础 CIoU
+    iou = bbox_iou(pred, target, xywh=xywh, CIoU=True)
+    base_loss = 1.0 - iou
+
+    # 2. 根据目标面积调整损失
+    if xywh:
+        gt_w, gt_h = target[..., 2], target[..., 3]
+    else:
+        gt_w = target[..., 2] - target[..., 0]
+        gt_h = target[..., 3] - target[..., 1]
+    gt_area = gt_w * gt_h
+
+    # 小目标定义：面积 < 640*640 的 0.5%
+    ref_area = 640.0 * 640.0
+    small_object_threshold = ref_area * 0.005  # 0.5% of image area
+
+    # 计算缩放因子
+    is_small = gt_area < small_object_threshold
+    scale_weight = torch.where(
+        is_small,
+        torch.tensor(scale_factor, device=pred.device, dtype=torch.float32),
+        torch.tensor(1.0, device=pred.device, dtype=torch.float32)
+    )
+
+    return (base_loss * scale_weight).unsqueeze(-1)
+
+
 def bbox_sadl(
     pred: torch.Tensor,
     target: torch.Tensor,
@@ -208,10 +375,10 @@ def bbox_sadl(
     2. 细长形态：船舶长宽比通常 3:1~10:1
 
     在 NWD（归一化 Wasserstein 距离）基础上引入尺度感知权重和形状感知权重：
-    SADL = (1 - NWD) × W_scale × W_shape
+    SADL = (1 - NWD) / (W_scale × W_shape)
 
-    W_scale: 小目标获得更强监督信号，面积越小权重越大
-    W_shape: 长宽比偏差额外惩罚，船舶是细长目标，形状不能错
+    W_scale: 小目标降低惩罚，面积越小权重越大
+    W_shape: 长宽比匹配时降低惩罚，偏差大时不降低
 
     Args:
         pred (torch.Tensor): 预测框，形状 (N, 4)。
@@ -229,7 +396,7 @@ def bbox_sadl(
     nwd = bbox_nwd(pred, target, xywh=xywh, C=C, eps=eps)
     base_loss = 1.0 - nwd
 
-    # 2. 尺度感知权重：小目标获得更强监督
+    # 2. 尺度感知权重：小目标降低惩罚
     if xywh:
         gt_w, gt_h = target[..., 2], target[..., 3]
     else:
@@ -239,8 +406,9 @@ def bbox_sadl(
     ref_area = 640.0 * 640.0  # 标准输入图像面积
     scale_ratio = gt_area / (ref_area + eps)
     w_scale = 1.0 + alpha * (1.0 - scale_ratio.clamp(0, 1))
+    w_scale = w_scale.clamp(1.0, 1.0 + alpha)
 
-    # 3. 形状感知权重：长宽比偏差惩罚
+    # 3. 形状感知权重：长宽比匹配时降低惩罚
     if xywh:
         pred_w, pred_h = pred[..., 2], pred[..., 3]
         target_w, target_h = target[..., 2], target[..., 3]
@@ -252,9 +420,10 @@ def bbox_sadl(
     pred_ar = pred_w / (pred_h + eps)
     target_ar = target_w / (target_h + eps)
     ar_diff = (pred_ar - target_ar).abs() / (target_ar + eps)
-    w_shape = 1.0 + beta * ar_diff.clamp(0, 2)
+    w_shape = 1.0 + beta * (1.0 - ar_diff.clamp(0, 1))
+    w_shape = w_shape.clamp(1.0, 1.0 + beta)
 
-    return (base_loss * w_scale * w_shape).unsqueeze(-1)
+    return (base_loss / (w_scale * w_shape)).unsqueeze(-1)
 
 
 def bbox_shape_iou(
