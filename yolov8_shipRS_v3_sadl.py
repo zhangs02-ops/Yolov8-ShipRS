@@ -1,4 +1,5 @@
-"""ShipRS-v3 + SADL 训练脚本 — 尺度感知分布损失"""
+"""ShipRS-v3 + SADL 训练脚本 — 尺度感知分布损失."""
+
 from ultralytics import YOLO
 
 if __name__ == "__main__":

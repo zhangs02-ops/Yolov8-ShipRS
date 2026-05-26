@@ -1,4 +1,5 @@
-"""ShipRS-v3 训练脚本 — 原创改进版 (DASC + BSA + SOAU)"""
+"""ShipRS-v3 训练脚本 — 原创改进版 (DASC + BSA + SOAU)."""
+
 from ultralytics import YOLO
 
 if __name__ == "__main__":
