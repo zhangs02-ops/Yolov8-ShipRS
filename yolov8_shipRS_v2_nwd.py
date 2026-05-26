@@ -1,4 +1,5 @@
-"""ShipRS-v2 训练脚本（完整模型 + NWD + Shape-IoU 组合损失）"""
+"""ShipRS-v2 训练脚本（完整模型 + NWD + Shape-IoU 组合损失）."""
+
 from ultralytics import YOLO
 
 model = YOLO("yolov8-ShipRS-v2.yaml")
@@ -19,8 +20,8 @@ model.train(
     seed=0,
     device=0,
     workers=8,
-    nwd=True,          # 使用 NWD 损失（检测阶段）
+    nwd=True,  # 使用 NWD 损失（检测阶段）
     nwd_c=2.0,
-    shape_iou=True,    # Shape-IoU 与 NWD 互斥，这里会优先使用 NWD
+    shape_iou=True,  # Shape-IoU 与 NWD 互斥，这里会优先使用 NWD
     # 如需单独测试 Shape-IoU，请将 nwd 设为 False
 )
