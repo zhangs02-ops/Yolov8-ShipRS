@@ -156,9 +156,9 @@ def bbox_nwd(
 ) -> torch.Tensor:
     """Calculate Normalized Wasserstein Distance (NWD) between bounding boxes.
 
-    Models each bounding box as a 2D Gaussian distribution and computes the 2nd Wasserstein
-    distance, then normalizes to [0, 1] via exp(-sqrt(W2) / C). Designed for small object
-    detection where IoU is overly sensitive to minor localization errors.
+    Models each bounding box as a 2D Gaussian distribution and computes the 2nd Wasserstein distance, then normalizes to
+    [0, 1] via exp(-sqrt(W2) / C). Designed for small object detection where IoU is overly sensitive to minor
+    localization errors.
 
     Args:
         box1 (torch.Tensor): Bounding boxes, last dimension 4.
@@ -201,17 +201,15 @@ def bbox_sadl(
     C: float = 2.0,
     eps: float = 1e-7,
 ) -> torch.Tensor:
-    """尺度感知分布损失（Scale-Aware Distribution Loss）。
+    """尺度感知分布损失（Scale-Aware Distribution Loss）。.
 
     针对遥感船舶小目标检测的独特难点设计：
     1. 尺度极端：同一图像中渔船几像素、货船上百像素
     2. 细长形态：船舶长宽比通常 3:1~10:1
 
-    在 NWD（归一化 Wasserstein 距离）基础上引入尺度感知权重和形状感知权重：
-    SADL = (1 - NWD) × W_scale × W_shape
+    在 NWD（归一化 Wasserstein 距离）基础上引入尺度感知权重和形状感知权重： SADL = (1 - NWD) × W_scale × W_shape
 
-    W_scale: 小目标获得更强监督信号，面积越小权重越大
-    W_shape: 长宽比偏差额外惩罚，船舶是细长目标，形状不能错
+    W_scale: 小目标获得更强监督信号，面积越小权重越大 W_shape: 长宽比偏差额外惩罚，船舶是细长目标，形状不能错
 
     Args:
         pred (torch.Tensor): 预测框，形状 (N, 4)。
@@ -265,10 +263,9 @@ def bbox_shape_iou(
 ) -> torch.Tensor:
     """Calculate Shape-IoU loss between bounding boxes.
 
-    Shape-IoU considers the shape (width/height ratio) difference between
-    predicted and ground truth boxes. It applies scale-specific weights to
-    width and height components, making it more sensitive to shape variations
-    than standard CIoU. Particularly effective for non-square objects like ships.
+    Shape-IoU considers the shape (width/height ratio) difference between predicted and ground truth boxes. It applies
+    scale-specific weights to width and height components, making it more sensitive to shape variations than standard
+    CIoU. Particularly effective for non-square objects like ships.
 
     Args:
         box1 (torch.Tensor): Predicted bounding boxes, last dimension 4.

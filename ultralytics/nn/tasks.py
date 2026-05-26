@@ -17,10 +17,6 @@ from ultralytics.nn.modules import (
     C1,
     C2,
     C2PSA,
-    C2f_BSA,
-    C2f_CA,
-    C2f_DASC,
-    C2f_EMA,
     C3,
     C3TR,
     DASC,
@@ -34,13 +30,17 @@ from ultralytics.nn.modules import (
     SPPF,
     A2C2f,
     AConv,
-    ADown,
     AdaptiveDetect,
+    ADown,
     Bottleneck,
     BottleneckBSA,
     BottleneckCSP,
     BottleneckDASC,
     C2f,
+    C2f_BSA,
+    C2f_CA,
+    C2f_DASC,
+    C2f_EMA,
     C2fAttn,
     C2fCIB,
     C2fPSA,
@@ -1719,7 +1719,19 @@ def parse_model(d, ch, verbose=True):
             args.extend([reg_max, end2end, [ch[x] for x in f]])
             if m is Segment or m is YOLOESegment or m is Segment26 or m is YOLOESegment26:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
-            if m in {Detect, AdaptiveDetect, YOLOEDetect, Segment, Segment26, YOLOESegment, YOLOESegment26, Pose, Pose26, OBB, OBB26}:
+            if m in {
+                Detect,
+                AdaptiveDetect,
+                YOLOEDetect,
+                Segment,
+                Segment26,
+                YOLOESegment,
+                YOLOESegment26,
+                Pose,
+                Pose26,
+                OBB,
+                OBB26,
+            }:
                 m.legacy = legacy
         elif m is v10Detect:
             args.append([ch[x] for x in f])
