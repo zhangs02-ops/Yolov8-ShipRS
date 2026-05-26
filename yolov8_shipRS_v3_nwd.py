@@ -1,4 +1,5 @@
-"""ShipRS-v3 + NWD 训练脚本"""
+"""ShipRS-v3 + NWD 训练脚本."""
+
 from ultralytics import YOLO
 
 if __name__ == "__main__":
