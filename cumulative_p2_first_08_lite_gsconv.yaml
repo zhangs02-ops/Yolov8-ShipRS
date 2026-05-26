@@ -1,0 +1,50 @@
+# Exp8: Lite version — Backbone Conv→GSConv + Bottleneck C2f→PConv
+# 在 06_dyhead 基础上:
+#   - Backbone SPDConv → GSConv (深度可分离+shuffle, 参数量-40%)
+#   - C2f → C2f_PConv (Bottleneck内第二个3×3换PConv, -20%)
+#   - C2f_EMA 保持 (EMA注意力不可替代)
+#   - CDGM, DyHeadDetect 不变
+nc: 1
+scales:
+  n: [0.33, 0.25, 1024]
+scale: n
+
+backbone:
+  - [-1, 1, GSConv, [64, 3, 2]]      # 0  ★GSConv替代SPDConv
+  - [-1, 1, GSConv, [128, 3, 2]]     # 1  ★GSConv替代SPDConv
+  - [-1, 3, C2f_PConv, [128, True]]  # 2  ★轻量C2f
+  - [-1, 1, GSConv, [256, 3, 2]]     # 3  ★GSConv替代SPDConv
+  - [-1, 6, C2f_EMA, [256, True]]    # 4  (EMA保持)
+  - [-1, 1, GSConv, [512, 3, 2]]     # 5  ★GSConv替代SPDConv
+  - [-1, 6, C2f_PConv, [512, True]]  # 6  ★轻量C2f
+  - [-1, 1, GSConv, [1024, 3, 2]]    # 7  ★GSConv替代SPDConv
+  - [-1, 3, C2f_PConv, [1024, True]] # 8  ★轻量C2f
+  - [-1, 1, SPPF, [1024, 5]]         # 9
+
+head:
+  # FPN P4
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 10
+  - [[-1, 6], 1, CDGM, []]                        # 11
+  - [-1, 3, C2f_PConv, [512]]                     # 12 ★轻量
+  # FPN P3
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 13
+  - [[-1, 4], 1, CDGM, []]                        # 14
+  - [-1, 3, C2f_PConv, [256]]                     # 15 ★轻量
+  # FPN P2
+  - [15, 1, nn.Upsample, [None, 2, "nearest"]]   # 16
+  - [[-1, 2], 1, CDGM, []]                        # 17
+  - [-1, 3, C2f_PConv, [128]]                     # 18 ★轻量
+  # PAN P3
+  - [18, 1, GSConv, [128, 3, 2]]                  # 19 ★GSConv下采样
+  - [[-1, 15], 1, Concat, [1]]                    # 20
+  - [-1, 3, C2f_PConv, [256]]                     # 21 ★轻量
+  # PAN P4
+  - [21, 1, GSConv, [256, 3, 2]]                  # 22 ★GSConv下采样
+  - [[-1, 12], 1, Concat, [1]]                    # 23
+  - [-1, 3, C2f_PConv, [512]]                     # 24 ★轻量
+  # PAN P5
+  - [24, 1, GSConv, [512, 3, 2]]                  # 25 ★GSConv下采样
+  - [[-1, 9], 1, Concat, [1]]                     # 26
+  - [-1, 3, C2f_PConv, [1024]]                    # 27 ★轻量
+  # Detect 4-scale with DyHeadDetect
+  - [[18, 21, 24, 27], 1, DyHeadDetect, [nc]]     # 28
