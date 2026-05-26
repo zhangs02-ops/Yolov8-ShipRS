@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import BSA, Conv, CoordAttention, DASC, DWConv, EMA, GhostConv, LightConv, RepConv, SOAU, autopad
+from .conv import BSA, DASC, EMA, Conv, CoordAttention, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -17,10 +17,6 @@ __all__ = (
     "C1",
     "C2",
     "C2PSA",
-    "C2f_BSA",
-    "C2f_CA",
-    "C2f_DASC",
-    "C2f_EMA",
     "C3",
     "C3TR",
     "CIB",
@@ -44,6 +40,10 @@ __all__ = (
     "C2fAttn",
     "C2fCIB",
     "C2fPSA",
+    "C2f_BSA",
+    "C2f_CA",
+    "C2f_DASC",
+    "C2f_EMA",
     "C3Ghost",
     "C3k2",
     "C3x",
@@ -2077,12 +2077,9 @@ class RealNVP(nn.Module):
 
 
 class BottleneckCA(nn.Module):
-    """带坐标注意力的瓶颈模块（Bottleneck with Coordinate Attention）。
+    """带坐标注意力的瓶颈模块（Bottleneck with Coordinate Attention）。.
 
-    在标准Bottleneck的输出上添加CoordAttention坐标注意力机制，
-    使每个瓶颈层的输出都经过精确的空间位置编码增强。
-    坐标注意力能够同时捕获通道间关系和空间位置信息，
-    对小目标（如遥感船舶）的定位精度有显著提升。
+    在标准Bottleneck的输出上添加CoordAttention坐标注意力机制， 使每个瓶颈层的输出都经过精确的空间位置编码增强。 坐标注意力能够同时捕获通道间关系和空间位置信息， 对小目标（如遥感船舶）的定位精度有显著提升。
 
     网络结构:
         输入 -> Conv(降维) -> Conv(升维) -> CoordAttention(位置编码) -> [+ 残差] -> 输出
@@ -2097,7 +2094,7 @@ class BottleneckCA(nn.Module):
     def __init__(
         self, c1: int, c2: int, shortcut: bool = True, g: int = 1, k: tuple[int, int] = (3, 3), e: float = 0.5
     ):
-        """初始化带坐标注意力的瓶颈模块。
+        """初始化带坐标注意力的瓶颈模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2109,13 +2106,13 @@ class BottleneckCA(nn.Module):
         """
         super().__init__()
         c_ = int(c2 * e)  # 中间隐藏通道数
-        self.cv1 = Conv(c1, c_, k[0], 1)               # 第一个卷积: 降维
-        self.cv2 = Conv(c_, c2, k[1], 1, g=g)           # 第二个卷积: 升维
-        self.ca = CoordAttention(c2)                     # 坐标注意力: 编码空间位置
-        self.add = shortcut and c1 == c2                 # 残差连接条件
+        self.cv1 = Conv(c1, c_, k[0], 1)  # 第一个卷积: 降维
+        self.cv2 = Conv(c_, c2, k[1], 1, g=g)  # 第二个卷积: 升维
+        self.ca = CoordAttention(c2)  # 坐标注意力: 编码空间位置
+        self.add = shortcut and c1 == c2  # 残差连接条件
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """前向传播: 卷积 -> 坐标注意力增强 -> 可选残差连接。
+        """前向传播: 卷积 -> 坐标注意力增强 -> 可选残差连接。.
 
         Args:
             x (torch.Tensor): 输入特征图 (B, C, H, W)。
@@ -2130,11 +2127,9 @@ class BottleneckCA(nn.Module):
 
 
 class C2f_CA(C2f):
-    """带坐标注意力增强的C2f模块（C2f with Coordinate Attention）。
+    """带坐标注意力增强的C2f模块（C2f with Coordinate Attention）。.
 
-    将C2f中的标准Bottleneck替换为BottleneckCA，使每个瓶颈层的输出
-    都经过坐标注意力增强。坐标注意力能够精确编码特征的空间位置信息，
-    对小目标检测场景（如遥感船舶检测）特别有效。
+    将C2f中的标准Bottleneck替换为BottleneckCA，使每个瓶颈层的输出 都经过坐标注意力增强。坐标注意力能够精确编码特征的空间位置信息， 对小目标检测场景（如遥感船舶检测）特别有效。
 
     设计动机:
         - 标准C2f模块缺乏显式的空间位置编码
@@ -2158,7 +2153,7 @@ class C2f_CA(C2f):
     """
 
     def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
-        """初始化C2f_CA模块。
+        """初始化C2f_CA模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2171,16 +2166,13 @@ class C2f_CA(C2f):
         super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
         # 核心改动: 将标准Bottleneck替换为BottleneckCA
         # 每个BottleneckCA在标准卷积输出上添加坐标注意力
-        self.m = nn.ModuleList(
-            BottleneckCA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
-        )
+        self.m = nn.ModuleList(BottleneckCA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
 
 
 class BottleneckEMA(Bottleneck):
-    """带EMA高效多尺度注意力的瓶颈模块。
+    """带EMA高效多尺度注意力的瓶颈模块。.
 
-    在标准Bottleneck的第二个卷积后添加EMA注意力，通过三分支并行
-    （1D水平、1D垂直、1x1）提取多尺度空间特征，增强特征表达能力。
+    在标准Bottleneck的第二个卷积后添加EMA注意力，通过三分支并行 （1D水平、1D垂直、1x1）提取多尺度空间特征，增强特征表达能力。
 
     Attributes:
         cv1 (Conv): 第一个卷积（降维）。
@@ -2189,7 +2181,7 @@ class BottleneckEMA(Bottleneck):
     """
 
     def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
-        """初始化BottleneckEMA。
+        """初始化BottleneckEMA。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2207,11 +2199,9 @@ class BottleneckEMA(Bottleneck):
 
 
 class C2f_EMA(C2f):
-    """带EMA注意力增强的C2f模块。
+    """带EMA注意力增强的C2f模块。.
 
-    将C2f中的标准Bottleneck替换为BottleneckEMA，使每个瓶颈层的输出
-    都经过EMA高效多尺度注意力增强。EMA通过三分支并行结构捕获多尺度
-    空间特征，对小目标检测特别有效且计算开销低。
+    将C2f中的标准Bottleneck替换为BottleneckEMA，使每个瓶颈层的输出 都经过EMA高效多尺度注意力增强。EMA通过三分支并行结构捕获多尺度 空间特征，对小目标检测特别有效且计算开销低。
 
     网络结构:
         输入 -> 1x1卷积 -> split为两路
@@ -2223,7 +2213,7 @@ class C2f_EMA(C2f):
     """
 
     def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
-        """初始化C2f_EMA模块。
+        """初始化C2f_EMA模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2234,24 +2224,20 @@ class C2f_EMA(C2f):
             e (float): 通道扩展比例。
         """
         super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
-        self.m = nn.ModuleList(
-            BottleneckEMA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
-        )
+        self.m = nn.ModuleList(BottleneckEMA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
 
 
 class ASFF(nn.Module):
-    """自适应空间特征融合模块（Adaptive Spatial Feature Fusion）。
+    """自适应空间特征融合模块（Adaptive Spatial Feature Fusion）。.
 
-    对多个不同尺度的特征图进行自适应加权融合，让网络自动学习
-    每个尺度特征的重要性权重。解决传统FPN中直接concat或add导致的
-    特征冲突问题，特别适合小目标与大目标共存的场景。
+    对多个不同尺度的特征图进行自适应加权融合，让网络自动学习 每个尺度特征的重要性权重。解决传统FPN中直接concat或add导致的 特征冲突问题，特别适合小目标与大目标共存的场景。
 
     References:
         https://arxiv.org/abs/1911.09516
     """
 
     def __init__(self, level, multiplier=1, rfb=False, vis=False):
-        """初始化ASFF模块。
+        """初始化ASFF模块。.
 
         Args:
             level (int): 当前融合层级，决定输入特征的尺度关系。
@@ -2287,7 +2273,7 @@ class ASFF(nn.Module):
         self.vis = vis
 
     def forward(self, x):
-        """前向传播：多尺度特征对齐 -> 权重计算 -> 自适应加权融合。
+        """前向传播：多尺度特征对齐 -> 权重计算 -> 自适应加权融合。.
 
         Args:
             x (list[torch.Tensor]): 三个尺度的输入特征 [level0, level1, level2]。
@@ -2300,7 +2286,7 @@ class ASFF(nn.Module):
         if self.level == 0:
             level_0_resized = x_level_0
             level_1_resized = self.stride_level_1(x_level_1)
-            level_2_downsampled_intra = F.max_pool2d(x_level_2, 3, 2, 1)
+            F.max_pool2d(x_level_2, 3, 2, 1)
             level_2_resized = self.stride_level_2(x_level_2)
         elif self.level == 1:
             level_0_compressed = self.compress_level_0(x_level_0)
@@ -2331,14 +2317,13 @@ class ASFF(nn.Module):
 
 
 class BottleneckDASC(Bottleneck):
-    """带DASC方向感知条形卷积的瓶颈模块。
+    """带DASC方向感知条形卷积的瓶颈模块。.
 
-    将标准Bottleneck中的3×3卷积替换为DASC条形卷积，
-    使网络能自适应捕获船舶目标的水平和垂直方向特征。
+    将标准Bottleneck中的3×3卷积替换为DASC条形卷积， 使网络能自适应捕获船舶目标的水平和垂直方向特征。
     """
 
     def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
-        """初始化BottleneckDASC。
+        """初始化BottleneckDASC。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2356,10 +2341,9 @@ class BottleneckDASC(Bottleneck):
 
 
 class C2f_DASC(C2f):
-    """带DASC方向感知条形卷积的C2f模块。
+    """带DASC方向感知条形卷积的C2f模块。.
 
-    将C2f中的标准Bottleneck替换为BottleneckDASC，
-    使每个瓶颈层都能自适应捕获船舶的细长方向特征。
+    将C2f中的标准Bottleneck替换为BottleneckDASC， 使每个瓶颈层都能自适应捕获船舶的细长方向特征。
 
     适用场景:
         - Backbone中替代标准C2f，提升对细长船舶的特征提取能力
@@ -2367,7 +2351,7 @@ class C2f_DASC(C2f):
     """
 
     def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
-        """初始化C2f_DASC模块。
+        """初始化C2f_DASC模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2378,20 +2362,17 @@ class C2f_DASC(C2f):
             e (float): 通道扩展比例。
         """
         super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
-        self.m = nn.ModuleList(
-            BottleneckDASC(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
-        )
+        self.m = nn.ModuleList(BottleneckDASC(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
 
 
 class BottleneckBSA(Bottleneck):
-    """带背景抑制注意力的瓶颈模块。
+    """带背景抑制注意力的瓶颈模块。.
 
-    在标准Bottleneck的第二个卷积后添加BSA背景抑制注意力，
-    抑制海面背景干扰，增强船舶前景特征。
+    在标准Bottleneck的第二个卷积后添加BSA背景抑制注意力， 抑制海面背景干扰，增强船舶前景特征。
     """
 
     def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
-        """初始化BottleneckBSA。
+        """初始化BottleneckBSA。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2409,10 +2390,9 @@ class BottleneckBSA(Bottleneck):
 
 
 class C2f_BSA(C2f):
-    """带背景抑制注意力的C2f模块。
+    """带背景抑制注意力的C2f模块。.
 
-    将C2f中的标准Bottleneck替换为BottleneckBSA，
-    使每个瓶颈层的输出都经过背景抑制注意力增强。
+    将C2f中的标准Bottleneck替换为BottleneckBSA， 使每个瓶颈层的输出都经过背景抑制注意力增强。
 
     适用场景:
         - Neck特征融合层中替代标准C2f，抑制海面背景对融合特征的干扰
@@ -2420,7 +2400,7 @@ class C2f_BSA(C2f):
     """
 
     def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
-        """初始化C2f_BSA模块。
+        """初始化C2f_BSA模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -2431,7 +2411,4 @@ class C2f_BSA(C2f):
             e (float): 通道扩展比例。
         """
         super().__init__(c1, c2, n=n, shortcut=shortcut, g=g, e=e)
-        self.m = nn.ModuleList(
-            BottleneckBSA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)
-        )
-
+        self.m = nn.ModuleList(BottleneckBSA(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
