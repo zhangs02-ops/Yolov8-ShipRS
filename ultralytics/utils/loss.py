@@ -144,8 +144,12 @@ class BboxLoss(nn.Module):
         """Compute IoU (or NWD/Shape-IoU) and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
         if self.use_sadl:
-            loss_iou = (bbox_sadl(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False,
-                                  alpha=self.sadl_alpha, beta=self.sadl_beta) * weight).sum() / target_scores_sum
+            loss_iou = (
+                bbox_sadl(
+                    pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, alpha=self.sadl_alpha, beta=self.sadl_beta
+                )
+                * weight
+            ).sum() / target_scores_sum
         elif self.use_nwd:
             iou = bbox_nwd(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, C=self.nwd_c)
             loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
@@ -395,8 +399,13 @@ class v8DetectionLoss:
             sadl_beta=sadl_beta,
         )
         self.bbox_loss = BboxLoss(
-            m.reg_max, use_nwd=use_nwd, nwd_c=nwd_c, use_shape_iou=use_shape_iou,
-            use_sadl=use_sadl, sadl_alpha=sadl_alpha, sadl_beta=sadl_beta,
+            m.reg_max,
+            use_nwd=use_nwd,
+            nwd_c=nwd_c,
+            use_shape_iou=use_shape_iou,
+            use_sadl=use_sadl,
+            sadl_alpha=sadl_alpha,
+            sadl_beta=sadl_beta,
         ).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 

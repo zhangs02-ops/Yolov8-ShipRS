@@ -12,23 +12,23 @@ import torch.nn as nn
 __all__ = (
     "BSA",
     "CBAM",
+    "DASC",
+    "ECA",
+    "EMA",
+    "SOAU",
     "ChannelAttention",
     "Concat",
     "Conv",
     "Conv2",
     "ConvTranspose",
     "CoordAttention",
-    "DASC",
     "DWConv",
     "DWConvTranspose2d",
-    "ECA",
-    "EMA",
     "Focus",
     "GhostConv",
     "Index",
     "LightConv",
     "RepConv",
-    "SOAU",
     "SpatialAttention",
 )
 
@@ -620,11 +620,9 @@ class CBAM(nn.Module):
 
 
 class ECA(nn.Module):
-    """ECA注意力模块（Efficient Channel Attention）。
+    """ECA注意力模块（Efficient Channel Attention）。.
 
-    通过自适应1D卷积核实现轻量级通道注意力，几乎零参数开销，非常适合小模型。
-    核心思想：用1D卷积代替全连接层进行跨通道交互，卷积核大小由通道数自动计算，
-    避免了SE模块中降维带来的信息损失。
+    通过自适应1D卷积核实现轻量级通道注意力，几乎零参数开销，非常适合小模型。 核心思想：用1D卷积代替全连接层进行跨通道交互，卷积核大小由通道数自动计算， 避免了SE模块中降维带来的信息损失。
 
     参考文献: ECA-Net: Efficient Channel Attention for Deep CNNs (CVPR 2020)
 
@@ -635,7 +633,7 @@ class ECA(nn.Module):
     """
 
     def __init__(self, c1, gamma=2, b=1):
-        """初始化ECA模块。
+        """初始化ECA模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -654,7 +652,7 @@ class ECA(nn.Module):
         self.act = nn.Sigmoid()
 
     def forward(self, x):
-        """前向传播: 全局池化 -> 1D卷积跨通道交互 -> Sigmoid生成权重 -> 通道加权。
+        """前向传播: 全局池化 -> 1D卷积跨通道交互 -> Sigmoid生成权重 -> 通道加权。.
 
         Args:
             x (torch.Tensor): 输入特征图，形状为 (B, C, H, W)。
@@ -662,19 +660,17 @@ class ECA(nn.Module):
         Returns:
             (torch.Tensor): 通道注意力加权后的特征图，形状不变 (B, C, H, W)。
         """
-        y = self.pool(x)                          # (B, C, 1, 1) 全局平均池化获取通道描述符
-        y = y.squeeze(-1).transpose(-1, -2)        # (B, 1, C) 调整维度以适配1D卷积
-        y = self.conv(y)                           # (B, 1, C) 1D卷积实现相邻通道间的信息交互
-        y = y.transpose(-1, -2).unsqueeze(-1)      # (B, C, 1, 1) 恢复维度
-        return x * self.act(y)                     # 逐通道加权: 每个通道乘以对应的注意力权重
+        y = self.pool(x)  # (B, C, 1, 1) 全局平均池化获取通道描述符
+        y = y.squeeze(-1).transpose(-1, -2)  # (B, 1, C) 调整维度以适配1D卷积
+        y = self.conv(y)  # (B, 1, C) 1D卷积实现相邻通道间的信息交互
+        y = y.transpose(-1, -2).unsqueeze(-1)  # (B, C, 1, 1) 恢复维度
+        return x * self.act(y)  # 逐通道加权: 每个通道乘以对应的注意力权重
 
 
 class CoordAttention(nn.Module):
-    """坐标注意力模块（Coordinate Attention）。
+    """坐标注意力模块（Coordinate Attention）。.
 
-    将传统通道注意力分解为水平方向（H）和垂直方向（W）两个1D注意力，
-    能够同时编码通道关系和精确的空间位置信息。相比CBAM等空间注意力方法，
-    坐标注意力能捕获长程依赖且计算开销很小，特别适用于小目标检测任务。
+    将传统通道注意力分解为水平方向（H）和垂直方向（W）两个1D注意力， 能够同时编码通道关系和精确的空间位置信息。相比CBAM等空间注意力方法， 坐标注意力能捕获长程依赖且计算开销很小，特别适用于小目标检测任务。
 
     工作流程:
         1. 分别沿H方向和W方向进行自适应平均池化，保留位置信息
@@ -695,7 +691,7 @@ class CoordAttention(nn.Module):
     """
 
     def __init__(self, c1, reduction=32):
-        """初始化坐标注意力模块。
+        """初始化坐标注意力模块。.
 
         Args:
             c1 (int): 输入/输出通道数。
@@ -719,7 +715,7 @@ class CoordAttention(nn.Module):
         self.conv_w = nn.Conv2d(mid_c, c1, 1, 1, 0, bias=False)
 
     def forward(self, x):
-        """前向传播: H池化+W池化 -> 拼接+共享变换 -> 拆分+独立映射 -> 双方向注意力加权。
+        """前向传播: H池化+W池化 -> 拼接+共享变换 -> 拆分+独立映射 -> 双方向注意力加权。.
 
         Args:
             x (torch.Tensor): 输入特征图，形状为 (B, C, H, W)。
@@ -727,21 +723,21 @@ class CoordAttention(nn.Module):
         Returns:
             (torch.Tensor): 坐标注意力加权后的特征图，形状不变 (B, C, H, W)。
         """
-        B, C, H, W = x.shape
+        _B, _C, H, W = x.shape
 
         # Step 1: 方向池化，分别沿H和W方向获取位置编码
-        x_h = self.pool_h(x)                         # (B, C, H, 1) 保留垂直位置信息
-        x_w = self.pool_w(x).permute(0, 1, 3, 2)     # (B, C, W, 1) 保留水平位置信息，转置以便拼接
+        x_h = self.pool_h(x)  # (B, C, H, 1) 保留垂直位置信息
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)  # (B, C, W, 1) 保留水平位置信息，转置以便拼接
 
         # Step 2: 拼接两个方向的特征，共享1x1卷积进行降维和特征变换
-        y = torch.cat([x_h, x_w], dim=2)              # (B, C, H+W, 1)
-        y = self.act(self.bn1(self.conv1(y)))          # (B, mid_c, H+W, 1) 降维+激活
+        y = torch.cat([x_h, x_w], dim=2)  # (B, C, H+W, 1)
+        y = self.act(self.bn1(self.conv1(y)))  # (B, mid_c, H+W, 1) 降维+激活
 
         # Step 3: 拆分回H和W两个分支
-        x_h, x_w = y.split([H, W], dim=2)             # (B, mid_c, H, 1) 和 (B, mid_c, W, 1)
+        x_h, x_w = y.split([H, W], dim=2)  # (B, mid_c, H, 1) 和 (B, mid_c, W, 1)
 
         # Step 4: 各自通过独立1x1卷积生成注意力权重
-        x_h = self.conv_h(x_h).sigmoid()               # (B, C, H, 1) H方向注意力
+        x_h = self.conv_h(x_h).sigmoid()  # (B, C, H, 1) H方向注意力
         x_w = self.conv_w(x_w.permute(0, 1, 3, 2)).sigmoid()  # (B, C, 1, W) W方向注意力
 
         # Step 5: 双方向注意力加权 — 同时编码"在哪里"和"关注什么通道"
@@ -805,18 +801,16 @@ class Index(nn.Module):
 
 
 class EMA(nn.Module):
-    """高效多尺度注意力模块（Efficient Multi-Scale Attention）。
+    """高效多尺度注意力模块（Efficient Multi-Scale Attention）。.
 
-    将通道维度分组，通过3个并行分支（1D水平、1D垂直、1x1）提取多尺度空间特征，
-    然后通过跨空间信息交互和sigmoid注意力加权增强特征表达。
-    无额外参数开销（相比标准卷积），适合嵌入C2f等模块中增强小目标特征。
+    将通道维度分组，通过3个并行分支（1D水平、1D垂直、1x1）提取多尺度空间特征， 然后通过跨空间信息交互和sigmoid注意力加权增强特征表达。 无额外参数开销（相比标准卷积），适合嵌入C2f等模块中增强小目标特征。
 
     References:
         https://arxiv.org/abs/2305.13563
     """
 
     def __init__(self, channels, factor=32):
-        """初始化EMA模块。
+        """初始化EMA模块。.
 
         Args:
             channels (int): 输入通道数。
@@ -834,7 +828,7 @@ class EMA(nn.Module):
         self.conv3x3 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
-        """前向传播：三分支并行 -> 跨空间交互 -> 注意力加权。
+        """前向传播：三分支并行 -> 跨空间交互 -> 注意力加权。.
 
         Args:
             x (torch.Tensor): 输入特征图 (B, C, H, W)。
@@ -846,7 +840,7 @@ class EMA(nn.Module):
         group_x = x.reshape(b * self.groups, -1, h, w)  # (b*g, c//g, h, w)
 
         # 三分支并行
-        x_h = self.pool_h(group_x)           # (b*g, c//g, h, 1)
+        x_h = self.pool_h(group_x)  # (b*g, c//g, h, 1)
         x_w = self.pool_w(group_x).permute(0, 1, 3, 2)  # (b*g, c//g, w, 1)
         hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))  # (b*g, c//g, h+w, 1)
         x_h, x_w = torch.split(hw, [h, w], dim=2)
@@ -864,13 +858,11 @@ class EMA(nn.Module):
 
 
 class DASC(nn.Module):
-    """方向感知条形卷积（Direction-Aware Strip Convolution）。
+    """方向感知条形卷积（Direction-Aware Strip Convolution）。.
 
-    针对遥感图像中船舶目标的细长形态特性（长宽比通常3:1~10:1）设计。
-    标准3×3方形卷积核对细长目标的感受野利用率低，大量感受野落在目标之外。
+    针对遥感图像中船舶目标的细长形态特性（长宽比通常3:1~10:1）设计。 标准3×3方形卷积核对细长目标的感受野利用率低，大量感受野落在目标之外。
 
-    本模块并行使用1×7和7×1两个条形卷积核，分别捕获水平和垂直方向的特征，
-    然后通过全局池化自适应学习两个方向的权重，实现方向感知的特征提取。
+    本模块并行使用1×7和7×1两个条形卷积核，分别捕获水平和垂直方向的特征， 然后通过全局池化自适应学习两个方向的权重，实现方向感知的特征提取。
 
     设计思路:
         1×7卷积 → 擅长捕获东西向排列的船舶特征
@@ -878,15 +870,14 @@ class DASC(nn.Module):
         全局平均池化 → 评估两个方向的重要性
         Softmax归一化 → 自适应加权融合
 
-    参数量: 2×(C×C×7) ≈ 标准3×3卷积的4.7倍
-    感受野: 等效7×7区域，但对细长目标的信息利用率远高于方形卷积
+    参数量: 2×(C×C×7) ≈ 标准3×3卷积的4.7倍 感受野: 等效7×7区域，但对细长目标的信息利用率远高于方形卷积
 
     References:
         灵感来自条形卷积思想，但增加了自适应方向加权机制
     """
 
     def __init__(self, c1, c2, k=7, stride=1, groups=1):
-        """初始化DASC模块。
+        """初始化DASC模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -904,7 +895,7 @@ class DASC(nn.Module):
         self.pool = nn.AdaptiveAvgPool2d(1)
 
     def forward(self, x):
-        """前向传播：双方向条形卷积 → 方向重要性评估 → 自适应加权融合。
+        """前向传播：双方向条形卷积 → 方向重要性评估 → 自适应加权融合。.
 
         Args:
             x (torch.Tensor): 输入特征图 (B, C, H, W)。
@@ -925,15 +916,11 @@ class DASC(nn.Module):
 
 
 class BSA(nn.Module):
-    """背景抑制注意力（Background-Suppressed Attention）。
+    """背景抑制注意力（Background-Suppressed Attention）。.
 
-    针对遥感海面背景均匀但存在波浪、云影等干扰的问题设计。
-    通用注意力机制（如SE、CA）对所有区域一视同仁地"增强"，
-    但海面背景本身特征均匀，不需要增强，反而应该抑制。
+    针对遥感海面背景均匀但存在波浪、云影等干扰的问题设计。 通用注意力机制（如SE、CA）对所有区域一视同仁地"增强"， 但海面背景本身特征均匀，不需要增强，反而应该抑制。
 
-    本模块利用船舶（高频突变）与海面背景（低频平滑）的频率差异，
-    通过低频分支估计背景强度，生成背景权重图，然后对原始特征
-    进行背景抑制，保留船舶等高频前景特征。
+    本模块利用船舶（高频突变）与海面背景（低频平滑）的频率差异， 通过低频分支估计背景强度，生成背景权重图，然后对原始特征 进行背景抑制，保留船舶等高频前景特征。
 
     设计思路:
         低频分支(5×5 DWConv) → 捕获平滑背景区域
@@ -941,12 +928,11 @@ class BSA(nn.Module):
         背景权重 = Sigmoid(低频) → 值越大表示背景越强
         输出 = 高频 × (1 - 背景权重) + 残差
 
-    参数量: 极小（两个深度可分离卷积）
-    物理意义: 明确利用船舶与海面的频率差异
+    参数量: 极小（两个深度可分离卷积） 物理意义: 明确利用船舶与海面的频率差异
     """
 
     def __init__(self, c1, reduction=1.0):
-        """初始化BSA模块。
+        """初始化BSA模块。.
 
         Args:
             c1 (int): 输入通道数。
@@ -968,7 +954,7 @@ class BSA(nn.Module):
         self.residual_weight = 0.1
 
     def forward(self, x):
-        """前向传播：高低频分离 → 背景估计 → 背景抑制。
+        """前向传播：高低频分离 → 背景估计 → 背景抑制。.
 
         Args:
             x (torch.Tensor): 输入特征图 (B, C, H, W)。
@@ -982,27 +968,22 @@ class BSA(nn.Module):
 
 
 class SOAU(nn.Module):
-    """小目标感知上采样（Small-Object-Aware Upsampling）。
+    """小目标感知上采样（Small-Object-Aware Upsampling）。.
 
-    针对FPN/PAN中标准最近邻上采样"无脑复制"导致小目标特征稀释的问题。
-    标准上采样对所有区域一视同仁，但小目标区域需要更精细的插值。
+    针对FPN/PAN中标准最近邻上采样"无脑复制"导致小目标特征稀释的问题。 标准上采样对所有区域一视同仁，但小目标区域需要更精细的插值。
 
-    本模块使用可学习的逐像素注意力权重替代固定插值方法，
-    根据输入特征的局部内容自适应生成上采样权重。
-    小目标区域（高频变化）会学到更锐利的插值核，
-    背景区域（低频平滑）学到更平滑的插值核。
+    本模块使用可学习的逐像素注意力权重替代固定插值方法， 根据输入特征的局部内容自适应生成上采样权重。 小目标区域（高频变化）会学到更锐利的插值核， 背景区域（低频平滑）学到更平滑的插值核。
 
     设计思路:
         1. 先用最近邻上采样得到粗糙的2×放大特征
         2. 用3×3卷积从原始输入生成注意力权重图
         3. 用注意力权重对粗糙上采样结果做逐像素加权增强
 
-    参数量: C×9（只在Neck中使用2-3次，开销可控）
-    优势: 相比最近邻上采样更精细，相比Dysample更轻量
+    参数量: C×9（只在Neck中使用2-3次，开销可控） 优势: 相比最近邻上采样更精细，相比Dysample更轻量
     """
 
     def __init__(self, c1, scale_factor=2):
-        """初始化SOAU模块。
+        """初始化SOAU模块。.
 
         Args:
             c1 (int): 输入/输出通道数（上采样不改变通道数）。
@@ -1019,7 +1000,7 @@ class SOAU(nn.Module):
         )
 
     def forward(self, x):
-        """前向传播：最近邻上采样 → 特征精炼 → 残差增强。
+        """前向传播：最近邻上采样 → 特征精炼 → 残差增强。.
 
         Args:
             x (torch.Tensor): 输入特征图 (B, C, H, W)。
@@ -1028,6 +1009,7 @@ class SOAU(nn.Module):
             (torch.Tensor): 上采样后的特征图 (B, C, H×scale, W×scale)。
         """
         import torch.nn.functional as F
+
         x_up = F.interpolate(x, scale_factor=self.scale_factor, mode="nearest")
         x_refined = self.refine_conv(x_up)
         return x_up + 0.1 * x_refined
