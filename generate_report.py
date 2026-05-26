@@ -1,13 +1,14 @@
-"""生成 ShipRS 性能对比分析 Word 文档"""
+"""生成 ShipRS 性能对比分析 Word 文档."""
+
 from docx import Document
-from docx.shared import Pt, Cm, RGBColor
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
+from docx.shared import Cm, Pt, RGBColor
 
 
 def set_cell(cell, text, bold=False, align="center", size=10):
-    """设置单元格文本和样式"""
+    """设置单元格文本和样式."""
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = {
@@ -22,18 +23,21 @@ def set_cell(cell, text, bold=False, align="center", size=10):
 
 
 def shade_cell(cell, color):
-    """给单元格设置背景色"""
+    """给单元格设置背景色."""
     shading = cell._element.get_or_add_tcPr()
-    shd = shading.makeelement(qn("w:shd"), {
-        qn("w:val"): "clear",
-        qn("w:color"): "auto",
-        qn("w:fill"): color,
-    })
+    shd = shading.makeelement(
+        qn("w:shd"),
+        {
+            qn("w:val"): "clear",
+            qn("w:color"): "auto",
+            qn("w:fill"): color,
+        },
+    )
     shading.append(shd)
 
 
 def add_table(doc, headers, rows, col_widths=None, highlight_last=False):
-    """添加格式化表格"""
+    """添加格式化表格."""
     table = doc.add_table(rows=1 + len(rows), cols=len(headers))
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -62,7 +66,7 @@ def add_table(doc, headers, rows, col_widths=None, highlight_last=False):
 
 
 def add_heading(doc, text, level=2):
-    """添加标题"""
+    """添加标题."""
     h = doc.add_heading(text, level=level)
     for run in h.runs:
         run.font.name = "黑体"
@@ -70,7 +74,7 @@ def add_heading(doc, text, level=2):
 
 
 def add_note(doc, text):
-    """添加注释段落"""
+    """添加注释段落."""
     p = doc.add_paragraph()
     run = p.add_run(text)
     run.font.size = Pt(9)
