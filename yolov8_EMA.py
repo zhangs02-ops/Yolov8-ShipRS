@@ -1,4 +1,5 @@
-"""ShipRS-v2-EMA 消融训练脚本（仅 EMA 注意力，无渐进式融合）"""
+"""ShipRS-v2-EMA 消融训练脚本（仅 EMA 注意力，无渐进式融合）."""
+
 from ultralytics import YOLO
 
 model = YOLO("yolov8-EMA.yaml")

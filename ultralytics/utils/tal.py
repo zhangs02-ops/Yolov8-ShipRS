@@ -229,8 +229,9 @@ class TaskAlignedAssigner(nn.Module):
         """
         if self.use_sadl:
             # SADL returns loss, convert to similarity metric for assigner
-            sadl_loss = bbox_sadl(gt_bboxes, pd_bboxes, xywh=False,
-                                  alpha=self.sadl_alpha, beta=self.sadl_beta).squeeze(-1)
+            sadl_loss = bbox_sadl(gt_bboxes, pd_bboxes, xywh=False, alpha=self.sadl_alpha, beta=self.sadl_beta).squeeze(
+                -1
+            )
             return (1.0 - sadl_loss).clamp_(0)
         if self.use_nwd:
             return bbox_nwd(gt_bboxes, pd_bboxes, xywh=False, C=self.nwd_c).squeeze(-1).clamp_(0)

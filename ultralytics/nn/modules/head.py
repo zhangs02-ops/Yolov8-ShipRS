@@ -16,7 +16,7 @@ from ultralytics.utils.tal import dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, smart_inference_mode
 
 from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Proto26, RealNVP, Residual, SwiGLUFFN
-from .conv import Conv, DWConv, ECA
+from .conv import ECA, Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
@@ -263,10 +263,9 @@ class Detect(nn.Module):
 
 
 class FRM(nn.Module):
-    """特征精炼模块（Feature Refinement Module）。
+    """特征精炼模块（Feature Refinement Module）。.
 
-    使用空洞深度可分离卷积扩大感受野，结合ECA高效通道注意力增强特征表达。
-    具有尺度感知能力：对高分辨率特征图（检测小目标的P2/P3层）施加更强的增强。
+    使用空洞深度可分离卷积扩大感受野，结合ECA高效通道注意力增强特征表达。 具有尺度感知能力：对高分辨率特征图（检测小目标的P2/P3层）施加更强的增强。
 
     设计动机:
         - 小目标在特征图上仅占几个像素，需要更大的感受野来捕获上下文信息
@@ -286,7 +285,7 @@ class FRM(nn.Module):
     """
 
     def __init__(self, c1, scale_idx=0, num_scales=3):
-        """初始化特征精炼模块。
+        """初始化特征精炼模块。.
 
         Args:
             c1 (int): 输入/输出通道数。
@@ -304,10 +303,10 @@ class FRM(nn.Module):
         self.dw_conv = nn.Conv2d(c1, c1, 3, 1, padding=dilation, dilation=dilation, groups=c1, bias=False)
         self.bn = nn.BatchNorm2d(c1)
         self.pw_conv = Conv(c1, c1, 1)  # 1x1逐点卷积融合通道信息
-        self.eca = ECA(c1)              # 高效通道注意力
+        self.eca = ECA(c1)  # 高效通道注意力
 
     def forward(self, x):
-        """前向传播: 空洞深度卷积 -> BN -> 逐点卷积 -> ECA注意力 -> 尺度加权残差。
+        """前向传播: 空洞深度卷积 -> BN -> 逐点卷积 -> ECA注意力 -> 尺度加权残差。.
 
         Args:
             x (torch.Tensor): 输入特征图 (B, C, H, W)。
@@ -325,11 +324,9 @@ class FRM(nn.Module):
 
 
 class AdaptiveDetect(Detect):
-    """自适应检测头（Adaptive Detection Head）。
+    """自适应检测头（Adaptive Detection Head）。.
 
-    继承标准Detect检测头，在每个检测分支前添加特征精炼模块（FRM），
-    使用空洞卷积扩大感受野并通过ECA通道注意力增强特征表达。
-    具有尺度感知能力，自动对小尺度特征（P2/P3）施加更强的增强。
+    继承标准Detect检测头，在每个检测分支前添加特征精炼模块（FRM）， 使用空洞卷积扩大感受野并通过ECA通道注意力增强特征表达。 具有尺度感知能力，自动对小尺度特征（P2/P3）施加更强的增强。
 
     专为船舶遥感小目标检测设计，保持轻量化以适配YOLOv8n/s小模型。
 
@@ -347,18 +344,21 @@ class AdaptiveDetect(Detect):
         标准Detect检测（cv2边框回归 + cv3分类）
 
     Attributes:
-        frm (nn.ModuleList): 每个检测尺度对应的特征精炼模块。
-        其余属性继承自Detect。
+        frm (nn.ModuleList): 每个检测尺度对应的特征精炼模块。 其余属性继承自Detect。
 
     Examples:
         >>> detect = AdaptiveDetect(nc=5, ch=(64, 128, 256, 512))
-        >>> x = [torch.randn(1, 64, 160, 160), torch.randn(1, 128, 80, 80),
-        ...      torch.randn(1, 256, 40, 40), torch.randn(1, 512, 20, 20)]
+        >>> x = [
+        ...     torch.randn(1, 64, 160, 160),
+        ...     torch.randn(1, 128, 80, 80),
+        ...     torch.randn(1, 256, 40, 40),
+        ...     torch.randn(1, 512, 20, 20),
+        ... ]
         >>> outputs = detect(x)
     """
 
     def __init__(self, nc=80, reg_max=16, end2end=False, ch=()):
-        """初始化自适应检测头。
+        """初始化自适应检测头。.
 
         Args:
             nc (int): 检测类别数。
@@ -373,7 +373,7 @@ class AdaptiveDetect(Detect):
         self.frm = nn.ModuleList(FRM(x, scale_idx=i, num_scales=len(ch)) for i, x in enumerate(ch))
 
     def forward_head(self, x, box_head=None, cls_head=None):
-        """重写前向传播，在检测分支前应用FRM特征精炼。
+        """重写前向传播，在检测分支前应用FRM特征精炼。.
 
         对每个尺度的特征图先进行FRM增强（空洞卷积 + ECA注意力 + 尺度加权），
         然后再送入标准的边框回归和分类分支。
