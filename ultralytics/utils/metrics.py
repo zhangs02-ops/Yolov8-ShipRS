@@ -12,7 +12,14 @@ from typing import Any
 import numpy as np
 import torch
 
-from ultralytics.utils import LOGGER, DataExportMixin, SimpleClass, TryExcept, checks, plt_settings
+from ultralytics.utils import (
+    LOGGER,
+    DataExportMixin,
+    SimpleClass,
+    TryExcept,
+    checks,
+    plt_settings,
+)
 
 OKS_SIGMA = (
     np.array(
@@ -148,9 +155,7 @@ def bbox_iou(
                 distance_cost = gamma * rho2 / c2
                 omiga_w = torch.abs(w1 - w2) / torch.maximum(w1, w2 + eps)
                 omiga_h = torch.abs(h1 - h2) / torch.maximum(h1, h2 + eps)
-                shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(
-                    1 - torch.exp(-1 * omiga_h), 4
-                )
+                shape_cost = torch.pow(1 - torch.exp(-1 * omiga_w), 4) + torch.pow(1 - torch.exp(-1 * omiga_h), 4)
                 return iou - (distance_cost + shape_cost) / 2  # SIoU
             if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
                 v = (4 / math.pi**2) * ((w2 / h2).atan() - (w1 / h1).atan()).pow(2)
@@ -171,9 +176,8 @@ def bbox_wiou(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Calculate Wise-IoU (WIoU) with distance-penalized metric.
 
-    WIoU metric: IoU adjusted by center distance normalized by GT box size.
-    The focusing weight (for WIoUv3) is computed separately in BboxLoss
-    using EMA-tracked IoU_max and configurable delta parameter.
+    WIoU metric: IoU adjusted by center distance normalized by GT box size. The focusing weight (for WIoUv3) is computed
+    separately in BboxLoss using EMA-tracked IoU_max and configurable delta parameter.
 
     Formula:
         WIoU = IoU - (rho²/c²) × exp(-r)
@@ -218,8 +222,7 @@ def bbox_wiou(
 
     # Center distance squared, normalized by convex diagonal
     c2 = cw.pow(2) + ch.pow(2) + eps
-    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) +
-            (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
+    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)) / 4
 
     # Wise-IoU: scale-aware distance penalty
     # r = rho2/gt_diag2 normalizes center distance by GT box diagonal
@@ -240,9 +243,9 @@ def bbox_nwd(
 ) -> torch.Tensor:
     """Calculate Normalized Wasserstein Distance (NWD) between bounding boxes.
 
-    Models each bounding box as a 2D Gaussian distribution and computes the 2nd Wasserstein
-    distance, then normalizes to [0, 1] via exp(-sqrt(W2) / C). Designed for small object
-    detection where IoU is overly sensitive to minor localization errors.
+    Models each bounding box as a 2D Gaussian distribution and computes the 2nd Wasserstein distance, then normalizes to
+    [0, 1] via exp(-sqrt(W2) / C). Designed for small object detection where IoU is overly sensitive to minor
+    localization errors.
 
     Args:
         box1 (torch.Tensor): Bounding boxes, last dimension 4.
@@ -353,7 +356,7 @@ def bbox_scale_loss(
     scale_weight = torch.where(
         is_small,
         torch.tensor(scale_factor, device=pred.device, dtype=torch.float32),
-        torch.tensor(1.0, device=pred.device, dtype=torch.float32)
+        torch.tensor(1.0, device=pred.device, dtype=torch.float32),
     )
 
     return (base_loss * scale_weight).unsqueeze(-1)
@@ -368,17 +371,15 @@ def bbox_sadl(
     C: float = 2.0,
     eps: float = 1e-7,
 ) -> torch.Tensor:
-    """尺度感知分布损失（Scale-Aware Distribution Loss）。
+    """尺度感知分布损失（Scale-Aware Distribution Loss）。.
 
     针对遥感船舶小目标检测的独特难点设计：
     1. 尺度极端：同一图像中渔船几像素、货船上百像素
     2. 细长形态：船舶长宽比通常 3:1~10:1
 
-    在 NWD（归一化 Wasserstein 距离）基础上引入尺度感知权重和形状感知权重：
-    SADL = (1 - NWD) / (W_scale × W_shape)
+    在 NWD（归一化 Wasserstein 距离）基础上引入尺度感知权重和形状感知权重： SADL = (1 - NWD) / (W_scale × W_shape)
 
-    W_scale: 小目标降低惩罚，面积越小权重越大
-    W_shape: 长宽比匹配时降低惩罚，偏差大时不降低
+    W_scale: 小目标降低惩罚，面积越小权重越大 W_shape: 长宽比匹配时降低惩罚，偏差大时不降低
 
     Args:
         pred (torch.Tensor): 预测框，形状 (N, 4)。
@@ -434,10 +435,9 @@ def bbox_shape_iou(
 ) -> torch.Tensor:
     """Calculate Shape-IoU loss between bounding boxes.
 
-    Shape-IoU considers the shape (width/height ratio) difference between
-    predicted and ground truth boxes. It applies scale-specific weights to
-    width and height components, making it more sensitive to shape variations
-    than standard CIoU. Particularly effective for non-square objects like ships.
+    Shape-IoU considers the shape (width/height ratio) difference between predicted and ground truth boxes. It applies
+    scale-specific weights to width and height components, making it more sensitive to shape variations than standard
+    CIoU. Particularly effective for non-square objects like ships.
 
     Args:
         box1 (torch.Tensor): Predicted bounding boxes, last dimension 4.

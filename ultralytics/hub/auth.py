@@ -1,6 +1,11 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
-from ultralytics.hub.utils import HUB_API_ROOT, HUB_WEB_ROOT, PREFIX, request_with_credentials
+from ultralytics.hub.utils import (
+    HUB_API_ROOT,
+    HUB_WEB_ROOT,
+    PREFIX,
+    request_with_credentials,
+)
 from ultralytics.utils import IS_COLAB, LOGGER, SETTINGS, emojis
 
 API_KEY_URL = f"{HUB_WEB_ROOT}/settings?tab=api+keys"

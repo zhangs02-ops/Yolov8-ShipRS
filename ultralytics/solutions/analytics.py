@@ -8,7 +8,10 @@ from typing import Any
 import cv2
 import numpy as np
 
-from ultralytics.solutions.solutions import BaseSolution, SolutionResults  # Import a parent class
+from ultralytics.solutions.solutions import (  # Import a parent class
+    BaseSolution,
+    SolutionResults,
+)
 from ultralytics.utils import plt_settings
 
 

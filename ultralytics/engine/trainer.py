@@ -43,7 +43,13 @@ from ultralytics.utils import (
     emojis,
 )
 from ultralytics.utils.autobatch import check_train_batch_size
-from ultralytics.utils.checks import check_amp, check_file, check_imgsz, check_model_file_from_stem, print_args
+from ultralytics.utils.checks import (
+    check_amp,
+    check_file,
+    check_imgsz,
+    check_model_file_from_stem,
+    print_args,
+)
 from ultralytics.utils.dist import ddp_cleanup, generate_ddp_command
 from ultralytics.utils.files import get_latest_run
 from ultralytics.utils.plotting import plot_results

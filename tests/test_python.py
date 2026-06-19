@@ -481,7 +481,11 @@ def test_utils_benchmarks():
 def test_utils_torchutils():
     """Test Torch utility functions including profiling and FLOP calculations."""
     from ultralytics.nn.modules.conv import Conv
-    from ultralytics.utils.torch_utils import get_flops_with_torch_profiler, profile_ops, time_sync
+    from ultralytics.utils.torch_utils import (
+        get_flops_with_torch_profiler,
+        profile_ops,
+        time_sync,
+    )
 
     x = torch.randn(1, 64, 20, 20)
     m = Conv(64, 64, k=1, s=2)
@@ -522,7 +526,12 @@ def test_utils_ops():
 
 def test_utils_files(tmp_path):
     """Test file handling utilities including file age, date, and paths with spaces."""
-    from ultralytics.utils.files import file_age, file_date, get_latest_run, spaces_in_path
+    from ultralytics.utils.files import (
+        file_age,
+        file_date,
+        get_latest_run,
+        spaces_in_path,
+    )
 
     file_age(SOURCE)
     file_date(SOURCE)
@@ -552,7 +561,13 @@ def test_utils_patches_torch_save(tmp_path):
 
 def test_nn_modules_conv():
     """Test Convolutional Neural Network modules including CBAM, Conv2, and ConvTranspose."""
-    from ultralytics.nn.modules.conv import CBAM, Conv2, ConvTranspose, DWConvTranspose2d, Focus
+    from ultralytics.nn.modules.conv import (
+        CBAM,
+        Conv2,
+        ConvTranspose,
+        DWConvTranspose2d,
+        Focus,
+    )
 
     c1, c2 = 8, 16  # input and output channels
     x = torch.zeros(4, c1, 10, 10)  # BCHW
@@ -727,7 +742,10 @@ def test_yoloe(tmp_path):
     model.val(data="coco128-seg.yaml", load_vp=True, imgsz=32)
 
     # Train, fine-tune
-    from ultralytics.models.yolo.yoloe import YOLOEPESegTrainer, YOLOESegTrainerFromScratch
+    from ultralytics.models.yolo.yoloe import (
+        YOLOEPESegTrainer,
+        YOLOESegTrainerFromScratch,
+    )
 
     model = YOLOE("yoloe-11s-seg.pt")
     model.train(

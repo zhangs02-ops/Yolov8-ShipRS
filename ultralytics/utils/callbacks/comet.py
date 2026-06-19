@@ -10,7 +10,13 @@ import cv2
 import numpy as np
 
 from ultralytics.utils import LOGGER, RANK, SETTINGS, TESTS_RUNNING, ops
-from ultralytics.utils.metrics import ClassifyMetrics, DetMetrics, OBBMetrics, PoseMetrics, SegmentMetrics
+from ultralytics.utils.metrics import (
+    ClassifyMetrics,
+    DetMetrics,
+    OBBMetrics,
+    PoseMetrics,
+    SegmentMetrics,
+)
 
 try:
     assert not TESTS_RUNNING  # do not log pytest

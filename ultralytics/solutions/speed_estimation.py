@@ -4,7 +4,11 @@ from collections import deque
 from math import sqrt
 from typing import Any
 
-from ultralytics.solutions.solutions import BaseSolution, SolutionAnnotator, SolutionResults
+from ultralytics.solutions.solutions import (
+    BaseSolution,
+    SolutionAnnotator,
+    SolutionResults,
+)
 from ultralytics.utils.plotting import colors
 
 

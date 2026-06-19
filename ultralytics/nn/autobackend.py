@@ -283,7 +283,9 @@ class AutoBackend(nn.Module):
                 w = next(Path(w).glob("*.onnx"))
                 LOGGER.info(f"Loading {w} for ONNX IMX inference...")
                 import mct_quantizers as mctq
-                from edgemdt_cl.pytorch.nms import nms_ort  # noqa - register custom NMS ops
+                from edgemdt_cl.pytorch.nms import (
+                    nms_ort,  # noqa - register custom NMS ops
+                )
 
                 session_options = mctq.get_ort_session_options()
                 session_options.enable_mem_reuse = False  # fix the shape mismatch from onnxruntime

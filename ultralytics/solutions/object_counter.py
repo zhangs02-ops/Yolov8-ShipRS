@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from ultralytics.solutions.solutions import BaseSolution, SolutionAnnotator, SolutionResults
+from ultralytics.solutions.solutions import (
+    BaseSolution,
+    SolutionAnnotator,
+    SolutionResults,
+)
 from ultralytics.utils.plotting import colors
 
 

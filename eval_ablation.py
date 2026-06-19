@@ -5,9 +5,13 @@ Ablation study comprehensive evaluation:
   - AP per size (S, M, L)
   - Precision, Recall
   - Params, GFLOPs
-  - FPS (inference speed)
+  - FPS (inference speed).
 """
-import sys, os, time, json
+
+import json
+import os
+import sys
+import time
 from pathlib import Path
 
 # 修复 nvrtc 库路径（PyTorch cu130 需要）
@@ -20,28 +24,29 @@ if os.path.isdir(_cu13_lib):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["PYTHONPATH"] = f"{Path(__file__).resolve().parent.parent}:{os.environ.get('PYTHONPATH', '')}"
 
-from ultralytics import YOLO
 import torch
-import numpy as np
+
+from ultralytics import YOLO
 
 # ─── Config ──────────────────────────────────────────────────────────────
 RESULTS_DIR = Path("/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first")
-DATA_YAML    = "/home/zhangs02/ultralytics-8.4.21/v5/v1/seaship.yaml"
+DATA_YAML = "/home/zhangs02/ultralytics-8.4.21/v5/v1/seaship.yaml"
 
 EXPERIMENTS = [
-    ("01_p2",       RESULTS_DIR / "01_p2"       / "weights" / "best.pt"),
-    ("02_spdconv",  RESULTS_DIR / "02_spdconv"  / "weights" / "best.pt"),
-    ("03_ema",      RESULTS_DIR / "03_ema"      / "weights" / "best.pt"),
-    ("04_cdgm",     RESULTS_DIR / "04_cdgm"     / "weights" / "best.pt"),
-    ("05_asg",      RESULTS_DIR / "05_asg"      / "weights" / "best.pt"),
-    ("06_dyhead",   RESULTS_DIR / "06_dyhead"   / "weights" / "best.pt"),
+    ("01_p2", RESULTS_DIR / "01_p2" / "weights" / "best.pt"),
+    ("02_spdconv", RESULTS_DIR / "02_spdconv" / "weights" / "best.pt"),
+    ("03_ema", RESULTS_DIR / "03_ema" / "weights" / "best.pt"),
+    ("04_cdgm", RESULTS_DIR / "04_cdgm" / "weights" / "best.pt"),
+    ("05_asg", RESULTS_DIR / "05_asg" / "weights" / "best.pt"),
+    ("06_dyhead", RESULTS_DIR / "06_dyhead" / "weights" / "best.pt"),
 ]
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
+
 @torch.inference_mode()
 def measure_fps(yolo_model, img_size=640, batch=1, warmup=50, iters=500):
-    """测 FPS (纯推理，通过 YOLO wrapper 以包含预处理 + NMS)"""
+    """测 FPS (纯推理，通过 YOLO wrapper 以包含预处理 + NMS)."""
     dummy = torch.randn(batch, 3, img_size, img_size)
 
     # warmup
@@ -60,24 +65,24 @@ def measure_fps(yolo_model, img_size=640, batch=1, warmup=50, iters=500):
 
 
 def extract_metrics(val_results):
-    """从 val() 返回的结果中提取指标"""
+    """从 val() 返回的结果中提取指标."""
     rd = val_results.results_dict
     return {
-        "mAP50":      rd.get("metrics/mAP50(B)",      0),
-        "mAP50-95":   rd.get("metrics/mAP50-95(B)",   0),
-        "precision":  rd.get("metrics/precision(B)",   0),
-        "recall":     rd.get("metrics/recall(B)",      0),
+        "mAP50": rd.get("metrics/mAP50(B)", 0),
+        "mAP50-95": rd.get("metrics/mAP50-95(B)", 0),
+        "precision": rd.get("metrics/precision(B)", 0),
+        "recall": rd.get("metrics/recall(B)", 0),
     }
 
 
 def count_params(model):
-    """计算参数量"""
+    """计算参数量."""
     return sum(p.numel() for p in model.parameters())
 
 
 @torch.inference_mode()
 def estimate_gflops(model, img_size=640):
-    """粗略估计 GFLOPs（单次前向传播）"""
+    """粗略估计 GFLOPs（单次前向传播）."""
     try:
         from thop import profile
     except ImportError:
@@ -91,13 +96,16 @@ def estimate_gflops(model, img_size=640):
 
 # ─── Main ────────────────────────────────────────────────────────────────
 
+
 def main():
     device = 0 if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
-    print(f"{'='*120}")
-    print(f"{'Experiment':<12} {'mAP50':>8} {'mAP50-95':>10} {'P':>8} {'R':>8} "
-          f"{'Params(M)':>10} {'GFLOPs':>8} {'FPS':>8} {'ms/img':>8}")
-    print(f"{'-'*100}")
+    print(f"{'=' * 120}")
+    print(
+        f"{'Experiment':<12} {'mAP50':>8} {'mAP50-95':>10} {'P':>8} {'R':>8} "
+        f"{'Params(M)':>10} {'GFLOPs':>8} {'FPS':>8} {'ms/img':>8}"
+    )
+    print(f"{'-' * 100}")
 
     all_results = {}
 
@@ -139,48 +147,57 @@ def main():
             summary = val_results.summary()
             if summary:
                 s = summary[0]
-                print(f"  [per-size] AP50_S:{s.get('ap50_small', '-'):>6} AP50_M:{s.get('ap50_medium', '-'):>6} AP50_L:{s.get('ap50_large', '-'):>6}")
+                print(
+                    f"  [per-size] AP50_S:{s.get('ap50_small', '-'):>6} AP50_M:{s.get('ap50_medium', '-'):>6} AP50_L:{s.get('ap50_large', '-'):>6}"
+                )
         except:
             pass
 
         all_results[name] = {**metrics, "params": params_m, "gflops": gflops, "fps": fps, "ms": ms}
 
-        print(f"{name:<12} {metrics['mAP50']:>8.4f} {metrics['mAP50-95']:>10.4f} "
-              f"{metrics['precision']:>8.4f} {metrics['recall']:>8.4f} "
-              f"{params_m:>10.3f} {gflops:>8.2f} {fps:>8.1f} {ms:>8.2f}")
+        print(
+            f"{name:<12} {metrics['mAP50']:>8.4f} {metrics['mAP50-95']:>10.4f} "
+            f"{metrics['precision']:>8.4f} {metrics['recall']:>8.4f} "
+            f"{params_m:>10.3f} {gflops:>8.2f} {fps:>8.1f} {ms:>8.2f}"
+        )
 
     # ─── Summary Table ────────────────────────────────────────────────
-    print(f"\n\n{'='*100}")
-    print(f"SUMMARY - Ablation Study @ 640×640 on seaship val set")
-    print(f"{'='*100}")
-    print(f"{'Experiment':<12} {'mAP50':>8} {'mAP50-95':>10} {'P':>8} {'R':>8} "
-          f"{'Params(M)':>10} {'GFLOPs':>8} {'FPS':>8} {'ms/img':>8}")
-    print(f"{'-'*100}")
+    print(f"\n\n{'=' * 100}")
+    print("SUMMARY - Ablation Study @ 640×640 on seaship val set")
+    print(f"{'=' * 100}")
+    print(
+        f"{'Experiment':<12} {'mAP50':>8} {'mAP50-95':>10} {'P':>8} {'R':>8} "
+        f"{'Params(M)':>10} {'GFLOPs':>8} {'FPS':>8} {'ms/img':>8}"
+    )
+    print(f"{'-' * 100}")
     for name, _ in EXPERIMENTS:
         r = all_results.get(name)
         if r is None:
             print(f"{name:<12}  {'N/A':>8}")
             continue
-        print(f"{name:<12} {r['mAP50']:>8.4f} {r['mAP50-95']:>10.4f} "
-              f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
-              f"{r['params']:>10.3f} {r['gflops']:>8.2f} {r['fps']:>8.1f} {r['ms']:>8.2f}")
+        print(
+            f"{name:<12} {r['mAP50']:>8.4f} {r['mAP50-95']:>10.4f} "
+            f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
+            f"{r['params']:>10.3f} {r['gflops']:>8.2f} {r['fps']:>8.1f} {r['ms']:>8.2f}"
+        )
 
     # ─── Delta Table ──────────────────────────────────────────────────
-    print(f"\n{'='*100}")
-    print(f"DELTA vs 01_p2 (P2 baseline)")
-    print(f"{'='*100}")
-    print(f"{'Experiment':<12} {'ΔmAP50':>8} {'ΔmAP50-95':>10} {'ΔP':>8} {'ΔR':>8} "
-          f"{'ΔParams':>10} {'ΔGFLOPs':>8}")
-    print(f"{'-'*100}")
+    print(f"\n{'=' * 100}")
+    print("DELTA vs 01_p2 (P2 baseline)")
+    print(f"{'=' * 100}")
+    print(f"{'Experiment':<12} {'ΔmAP50':>8} {'ΔmAP50-95':>10} {'ΔP':>8} {'ΔR':>8} {'ΔParams':>10} {'ΔGFLOPs':>8}")
+    print(f"{'-' * 100}")
     base = all_results.get("01_p2", {})
     for name, _ in EXPERIMENTS:
         r = all_results.get(name)
         if r is None or name == "01_p2":
             print(f"{name:<12}  {'-':>8}  {'-':>10}  {'-':>8}  {'-':>8}  {'-':>10}  {'-':>8}")
             continue
-        print(f"{name:<12} {r['mAP50']-base['mAP50']:>+8.4f} {r['mAP50-95']-base['mAP50-95']:>+10.4f} "
-              f"{r['precision']-base['precision']:>+8.4f} {r['recall']-base['recall']:>+8.4f} "
-              f"{r['params']-base['params']:>+10.3f} {r['gflops']-base['gflops']:>+8.2f}")
+        print(
+            f"{name:<12} {r['mAP50'] - base['mAP50']:>+8.4f} {r['mAP50-95'] - base['mAP50-95']:>+10.4f} "
+            f"{r['precision'] - base['precision']:>+8.4f} {r['recall'] - base['recall']:>+8.4f} "
+            f"{r['params'] - base['params']:>+10.3f} {r['gflops'] - base['gflops']:>+8.2f}"
+        )
 
     # 保存结果
     out_path = RESULTS_DIR / "eval_results.json"

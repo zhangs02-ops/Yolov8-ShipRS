@@ -145,7 +145,9 @@ def keras2pb(keras_model, file: Path, prefix=""):
         Creates a frozen graph by converting variables to constants for inference optimization.
     """
     import tensorflow as tf
-    from tensorflow.python.framework.convert_to_constants import convert_variables_to_constants_v2
+    from tensorflow.python.framework.convert_to_constants import (
+        convert_variables_to_constants_v2,
+    )
 
     LOGGER.info(f"\n{prefix} starting export with tensorflow {tf.__version__}...")
     m = tf.function(lambda x: keras_model(x))  # full model

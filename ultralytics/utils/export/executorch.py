@@ -57,7 +57,9 @@ def torch2executorch(
         (str): Path to the exported ExecuTorch model directory.
     """
     from executorch import version as executorch_version
-    from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
+    from executorch.backends.xnnpack.partition.xnnpack_partitioner import (
+        XnnpackPartitioner,
+    )
     from executorch.exir import to_edge_transform_and_lower
 
     LOGGER.info(f"\n{prefix} starting export with ExecuTorch {executorch_version.__version__}...")

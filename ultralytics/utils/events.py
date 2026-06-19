@@ -8,7 +8,16 @@ from threading import Thread
 from urllib.request import Request, urlopen
 
 from ultralytics import SETTINGS, __version__
-from ultralytics.utils import ARGV, ENVIRONMENT, GIT, IS_PIP_PACKAGE, ONLINE, PYTHON_VERSION, RANK, TESTS_RUNNING
+from ultralytics.utils import (
+    ARGV,
+    ENVIRONMENT,
+    GIT,
+    IS_PIP_PACKAGE,
+    ONLINE,
+    PYTHON_VERSION,
+    RANK,
+    TESTS_RUNNING,
+)
 from ultralytics.utils.downloads import GITHUB_ASSETS_NAMES
 from ultralytics.utils.torch_utils import get_cpu_info
 

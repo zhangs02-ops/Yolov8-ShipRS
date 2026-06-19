@@ -9,7 +9,17 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import time
 
-from ultralytics.utils import ENVIRONMENT, GIT, LOGGER, PYTHON_VERSION, RANK, SETTINGS, TESTS_RUNNING, Retry, colorstr
+from ultralytics.utils import (
+    ENVIRONMENT,
+    GIT,
+    LOGGER,
+    PYTHON_VERSION,
+    RANK,
+    SETTINGS,
+    TESTS_RUNNING,
+    Retry,
+    colorstr,
+)
 
 PREFIX = colorstr("Platform: ")
 

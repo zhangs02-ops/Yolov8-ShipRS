@@ -5,7 +5,11 @@ from typing import Any
 
 import cv2
 
-from ultralytics.solutions.solutions import BaseSolution, SolutionAnnotator, SolutionResults
+from ultralytics.solutions.solutions import (
+    BaseSolution,
+    SolutionAnnotator,
+    SolutionResults,
+)
 from ultralytics.utils.plotting import colors
 
 

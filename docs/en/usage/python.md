@@ -263,7 +263,11 @@ The `YOLO` model class serves as a high-level wrapper for Trainer classes. Each 
 !!! tip "Detection Trainer Example"
 
     ```python
-    from ultralytics.models.yolo.detect import DetectionPredictor, DetectionTrainer, DetectionValidator
+    from ultralytics.models.yolo.detect import (
+        DetectionPredictor,
+        DetectionTrainer,
+        DetectionValidator,
+    )
 
     # trainer
     trainer = DetectionTrainer(overrides={})

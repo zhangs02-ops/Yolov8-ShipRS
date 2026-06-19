@@ -6,7 +6,11 @@ from typing import Any
 
 import numpy as np
 
-from ultralytics.solutions.solutions import BaseSolution, SolutionAnnotator, SolutionResults
+from ultralytics.solutions.solutions import (
+    BaseSolution,
+    SolutionAnnotator,
+    SolutionResults,
+)
 from ultralytics.utils.plotting import colors
 
 

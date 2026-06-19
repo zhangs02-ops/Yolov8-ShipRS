@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from . import LOGGER
-from .metrics import bbox_iou, bbox_nwd, bbox_sadl, probiou
+from .metrics import bbox_iou, bbox_nwd, probiou
 from .ops import xywh2xyxy, xywhr2xyxyxyxy, xyxy2xywh
 from .torch_utils import TORCH_1_11
 

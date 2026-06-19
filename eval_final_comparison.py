@@ -3,7 +3,11 @@
 Comprehensive evaluation: 08_lite (lightweight) vs Full version vs other models.
 Measures: mAP50, mAP50-95, Precision, Recall, Params, GFLOPs, FPS, ms/img, Weight size.
 """
-import sys, os, time, json, subprocess
+
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 # ─── Config ──────────────────────────────────────────────────────────────
@@ -14,37 +18,49 @@ OUTPUT_DIR = Path("/home/zhangs02/yolo_result/v5/eval_comparison")
 # (name, weight_path, description)
 EXPERIMENTS = [
     # === Primary 200-epoch comparison ===
-    ("08_lite_gsconv",
-     "/home/zhangs02/yolo_result/v5/final_dif_model/08_lite/weights/best.pt",
-     "08_lite (GSConv+PConv) [200ep]"),
-    ("06_dyhead_full",
-     "/home/zhangs02/yolo_result/v5/final (2)/final/weights/best.pt",
-     "Full-DyHead [200ep]"),
-    ("yolov10n",
-     "/home/zhangs02/yolo_result/v5/final_dif_model/yolov10n/yolov10n/weights/best.pt",
-     "YOLOv10n [200ep]"),
-    ("MVD-YOLOv8",
-     "/home/zhangs02/yolo_result/v5/final_dif_model/MVD-YOLOv8/MVD-YOLOv8/weights/best.pt",
-     "MVD-YOLOv8 [200ep]"),
+    (
+        "08_lite_gsconv",
+        "/home/zhangs02/yolo_result/v5/final_dif_model/08_lite/weights/best.pt",
+        "08_lite (GSConv+PConv) [200ep]",
+    ),
+    ("06_dyhead_full", "/home/zhangs02/yolo_result/v5/final (2)/final/weights/best.pt", "Full-DyHead [200ep]"),
+    ("yolov10n", "/home/zhangs02/yolo_result/v5/final_dif_model/yolov10n/yolov10n/weights/best.pt", "YOLOv10n [200ep]"),
+    (
+        "MVD-YOLOv8",
+        "/home/zhangs02/yolo_result/v5/final_dif_model/MVD-YOLOv8/MVD-YOLOv8/weights/best.pt",
+        "MVD-YOLOv8 [200ep]",
+    ),
     # === 100-epoch ablation references ===
-    ("01_p2_100ep",
-     "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/01_p2/weights/best.pt",
-     "P2-baseline [100ep]"),
-    ("02_spdconv_100ep",
-     "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/02_spdconv/weights/best.pt",
-     "+SPDConv [100ep]"),
-    ("03_ema_100ep",
-     "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/03_ema/weights/best.pt",
-     "+EMA [100ep]"),
-    ("04_cdgm_100ep",
-     "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/04_cdgm/weights/best.pt",
-     "+CDGM [100ep]"),
-    ("05_asg_100ep",
-     "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/05_asg/weights/best.pt",
-     "+ASG [100ep]"),
-    ("06_dyhead_100ep",
-     "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/06_dyhead/weights/best.pt",
-     "+DyHead [100ep]"),
+    (
+        "01_p2_100ep",
+        "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/01_p2/weights/best.pt",
+        "P2-baseline [100ep]",
+    ),
+    (
+        "02_spdconv_100ep",
+        "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/02_spdconv/weights/best.pt",
+        "+SPDConv [100ep]",
+    ),
+    (
+        "03_ema_100ep",
+        "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/03_ema/weights/best.pt",
+        "+EMA [100ep]",
+    ),
+    (
+        "04_cdgm_100ep",
+        "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/04_cdgm/weights/best.pt",
+        "+CDGM [100ep]",
+    ),
+    (
+        "05_asg_100ep",
+        "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/05_asg/weights/best.pt",
+        "+ASG [100ep]",
+    ),
+    (
+        "06_dyhead_100ep",
+        "/home/zhangs02/yolo_result/v5/ablation_cumulative_100/ablation_cumulative_p2_first/06_dyhead/weights/best.pt",
+        "+DyHead [100ep]",
+    ),
 ]
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -166,9 +182,9 @@ print(json.dumps(results, indent=2))
     print(result.stdout)
     if result.stderr:
         # Filter tqdm progress bars
-        stderr_lines = [l for l in result.stderr.split('\\n') if '%' not in l and 'it/s' not in l and 's/it' not in l]
+        stderr_lines = [l for l in result.stderr.split("\\n") if "%" not in l and "it/s" not in l and "s/it" not in l]
         if stderr_lines:
-            print("STDERR:", '\\n'.join(stderr_lines[:20]), file=sys.stderr)
+            print("STDERR:", "\\n".join(stderr_lines[:20]), file=sys.stderr)
         else:
             print("(progress bars only in stderr)", file=sys.stderr)
 
@@ -177,10 +193,11 @@ print(json.dumps(results, indent=2))
 
 # ─── Main ────────────────────────────────────────────────────────────────
 
+
 def main():
-    print(f"{'='*130}")
-    print(f"COMPREHENSIVE EVALUATION - Final Comparison")
-    print(f"{'='*130}")
+    print(f"{'=' * 130}")
+    print("COMPREHENSIVE EVALUATION - Final Comparison")
+    print(f"{'=' * 130}")
     print(f"Models: {len(EXPERIMENTS)}")
     print()
 
@@ -201,9 +218,9 @@ def main():
             print(f"  {desc}: OK (cached)")
             continue
 
-        print(f"\\n{'='*80}")
+        print(f"\\n{'=' * 80}")
         print(f">>> Evaluating: {desc} ({name})")
-        print(f"{'='*80}", flush=True)
+        print(f"{'=' * 80}", flush=True)
 
         ret = run_single_eval(name, weight_path, desc)
         if ret != 0:
@@ -217,43 +234,53 @@ def main():
                 all_results[name] = json.load(f)
             r = all_results[name]
             print(f"  {desc}")
-            print(f"  mAP50={r['mAP50']:.4f}  mAP50-95={r['mAP50-95']:.4f}  "
-                  f"P={r['precision']:.4f}  R={r['recall']:.4f}")
-            print(f"  Params={r['params']:.3f}M  GFLOPs={r['gflops']:.2f}  "
-                  f"FPS={r['fps']:.1f}  ms={r['ms']:.2f}  Weight={r['weight_mb']:.1f}MB")
+            print(
+                f"  mAP50={r['mAP50']:.4f}  mAP50-95={r['mAP50-95']:.4f}  P={r['precision']:.4f}  R={r['recall']:.4f}"
+            )
+            print(
+                f"  Params={r['params']:.3f}M  GFLOPs={r['gflops']:.2f}  "
+                f"FPS={r['fps']:.1f}  ms={r['ms']:.2f}  Weight={r['weight_mb']:.1f}MB"
+            )
 
         # Clear GPU cache between models
-        import gc; gc.collect()
-        import torch; torch.cuda.empty_cache()
+        import gc
+
+        gc.collect()
+        import torch
+
+        torch.cuda.empty_cache()
 
     # ─── Summary Table ────────────────────────────────────────────────
-    print(f"\\n\\n{'='*130}")
-    print(f"COMPREHENSIVE COMPARISON @ 640×640 on seaship val set")
-    print(f"{'='*130}")
-    print(f"{'Model':<30} {'mAP50':>8} {'mAP50-95':>10} {'P':>8} {'R':>8} "
-          f"{'Params(M)':>10} {'GFLOPs':>8} {'FPS':>8} {'ms/img':>8} {'Weight':>8}")
-    print(f"{'-'*130}")
+    print(f"\\n\\n{'=' * 130}")
+    print("COMPREHENSIVE COMPARISON @ 640×640 on seaship val set")
+    print(f"{'=' * 130}")
+    print(
+        f"{'Model':<30} {'mAP50':>8} {'mAP50-95':>10} {'P':>8} {'R':>8} "
+        f"{'Params(M)':>10} {'GFLOPs':>8} {'FPS':>8} {'ms/img':>8} {'Weight':>8}"
+    )
+    print(f"{'-' * 130}")
 
     for name, weight_path, desc in EXPERIMENTS:
         r = all_results.get(name)
         if r is None:
             print(f"{desc:<30}  {'SKIP':>8}")
             continue
-        print(f"{desc:<30} {r['mAP50']:>8.4f} {r['mAP50-95']:>10.4f} "
-              f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
-              f"{r['params']:>10.3f} {r['gflops']:>8.2f} {r['fps']:>8.1f} {r['ms']:>8.2f} {r['weight_mb']:>7.1f}MB")
+        print(
+            f"{desc:<30} {r['mAP50']:>8.4f} {r['mAP50-95']:>10.4f} "
+            f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
+            f"{r['params']:>10.3f} {r['gflops']:>8.2f} {r['fps']:>8.1f} {r['ms']:>8.2f} {r['weight_mb']:>7.1f}MB"
+        )
 
     # ─── Key Comparison: Lite vs Full (200 epoch) ─────────────────────
     lite = all_results.get("08_lite_gsconv")
     full = all_results.get("06_dyhead_full")
     if lite and full:
-        print(f"\\n{'='*100}")
-        print(f"KEY COMPARISON: Lite (08_lite) vs Full (06_dyhead) @ 200 epochs")
-        print(f"{'='*100}")
+        print(f"\\n{'=' * 100}")
+        print("KEY COMPARISON: Lite (08_lite) vs Full (06_dyhead) @ 200 epochs")
+        print(f"{'=' * 100}")
         print(f"{'Metric':<20} {'Lite':>14} {'Full':>14} {'Delta':>12} {'Change':>10}")
-        print(f"{'-'*72}")
-        for k in ["mAP50", "mAP50-95", "precision", "recall",
-                   "params", "gflops", "fps", "ms", "weight_mb"]:
+        print(f"{'-' * 72}")
+        for k in ["mAP50", "mAP50-95", "precision", "recall", "params", "gflops", "fps", "ms", "weight_mb"]:
             lv = lite[k]
             fv = full[k]
             if isinstance(lv, (int, float)) and isinstance(fv, (int, float)) and fv != 0:
@@ -261,7 +288,7 @@ def main():
                 pct = delta / fv * 100
                 print(f"{k:<20} {lv:>14.4f} {fv:>14.4f} {delta:>+12.4f} {pct:>+9.2f}%")
             else:
-                print(f"{k:<20} {str(lv):>14} {str(fv):>14}")
+                print(f"{k:<20} {lv!s:>14} {fv!s:>14}")
 
     # ─── Save master results ──────────────────────────────────────────
     master = {}

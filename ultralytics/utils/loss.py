@@ -11,10 +11,23 @@ import torch.nn.functional as F
 
 from ultralytics.utils.metrics import OKS_SIGMA, RLE_WEIGHT
 from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
-from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
+from ultralytics.utils.tal import (
+    RotatedTaskAlignedAssigner,
+    TaskAlignedAssigner,
+    dist2bbox,
+    dist2rbox,
+    make_anchors,
+)
 from ultralytics.utils.torch_utils import autocast
 
-from .metrics import bbox_area_nwd, bbox_iou, bbox_nwd, bbox_sadl, bbox_shape_iou, bbox_wiou, probiou
+from .metrics import (
+    bbox_iou,
+    bbox_nwd,
+    bbox_sadl,
+    bbox_shape_iou,
+    bbox_wiou,
+    probiou,
+)
 from .tal import bbox2dist, rbox2dist
 
 
@@ -183,11 +196,19 @@ class BboxLoss(nn.Module):
             raw_loss = base_loss * area_w.unsqueeze(-1)
             loss_iou = (raw_loss * weight).sum() / target_scores_sum
         elif self.use_box_scale_loss:
-            loss_iou = (bbox_scale_loss(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False,
-                                         scale_factor=self.scale_factor) * weight).sum() / target_scores_sum
+            loss_iou = (
+                bbox_scale_loss(
+                    pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, scale_factor=self.scale_factor
+                )
+                * weight
+            ).sum() / target_scores_sum
         elif self.use_sadl:
-            loss_iou = (bbox_sadl(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False,
-                                  alpha=self.sadl_alpha, beta=self.sadl_beta) * weight).sum() / target_scores_sum
+            loss_iou = (
+                bbox_sadl(
+                    pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, alpha=self.sadl_alpha, beta=self.sadl_beta
+                )
+                * weight
+            ).sum() / target_scores_sum
         elif self.use_nwd:
             iou = bbox_nwd(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, C=self.nwd_c)
             loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
@@ -416,7 +437,7 @@ class v8DetectionLoss:
 
         self.use_dfl = m.reg_max > 1
 
-        use_nwd = getattr(h, "nwd", False)
+        getattr(h, "nwd", False)
         nwd_c = getattr(h, "nwd_c", 2.0)
         use_shape_iou = getattr(h, "shape_iou", False)
         use_sadl = getattr(h, "sadl", False)
@@ -444,10 +465,17 @@ class v8DetectionLoss:
             sadl_beta=sadl_beta,
         )
         self.bbox_loss = BboxLoss(
-            m.reg_max, use_nwd=False, nwd_c=nwd_c, use_shape_iou=use_shape_iou,
-            use_sadl=use_sadl, sadl_alpha=sadl_alpha, sadl_beta=sadl_beta,
-            use_box_scale_loss=use_box_scale_loss, scale_factor=scale_factor,
-            use_area_nwd=use_area_nwd, area_nwd_alpha=area_nwd_alpha,
+            m.reg_max,
+            use_nwd=False,
+            nwd_c=nwd_c,
+            use_shape_iou=use_shape_iou,
+            use_sadl=use_sadl,
+            sadl_alpha=sadl_alpha,
+            sadl_beta=sadl_beta,
+            use_box_scale_loss=use_box_scale_loss,
+            scale_factor=scale_factor,
+            use_area_nwd=use_area_nwd,
+            area_nwd_alpha=area_nwd_alpha,
             area_nwd_max_weight=area_nwd_max_weight,
             use_wiou=use_wiou,
             wiou_delta=wiou_delta,
