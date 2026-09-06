@@ -1,0 +1,29 @@
+# 轻量 CI：对项目自有脚本做语法编译检查（无需 GPU / 重型依赖）
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: 编译检查项目脚本
+        run: |
+          python -m compileall -q \
+            train_cumulative_p2_first.py \
+            eval_ablation.py eval_final_comparison.py eval_persize_ap.py \
+            plot_training_curves.py generate_report.py \
+            auto_train.py 001.py
+          python -m compileall -q v5 ultralytics
